@@ -12,7 +12,10 @@ export async function fetchTraces(limit: number = 50, offset: number = 0, status
   });
 
   if (!res.ok) {
-    throw new Error(`Failed to fetch traces: ${res.statusText}`);
+    if (res.status === 401) {
+      throw new Error("401 Unauthorized: Please log into Quarry to view monitoring traces.");
+    }
+    throw new Error(`Failed to fetch traces (${res.status}): ${res.statusText}`);
   }
 
   const data = await res.json();
@@ -26,7 +29,10 @@ export async function fetchTraceTree(traceId: string): Promise<TraceTree> {
   });
 
   if (!res.ok) {
-    throw new Error(`Failed to fetch trace ${traceId}: ${res.statusText}`);
+    if (res.status === 401) {
+      throw new Error("401 Unauthorized: Please log into Quarry to view monitoring traces.");
+    }
+    throw new Error(`Failed to fetch trace ${traceId} (${res.status}): ${res.statusText}`);
   }
 
   return res.json();
@@ -39,7 +45,10 @@ export async function fetchComponentStats(sinceHours: number = 24): Promise<Comp
   });
 
   if (!res.ok) {
-    throw new Error(`Failed to fetch stats: ${res.statusText}`);
+    if (res.status === 401) {
+      throw new Error("401 Unauthorized: Please log into Quarry to view monitoring stats.");
+    }
+    throw new Error(`Failed to fetch stats (${res.status}): ${res.statusText}`);
   }
 
   const data = await res.json();
@@ -53,7 +62,10 @@ export async function fetchSlowestSpans(limit: number = 20): Promise<SpanRecord[
   });
 
   if (!res.ok) {
-    throw new Error(`Failed to fetch slowest spans: ${res.statusText}`);
+    if (res.status === 401) {
+      throw new Error("401 Unauthorized: Please log into Quarry to view slowest spans.");
+    }
+    throw new Error(`Failed to fetch slowest spans (${res.status}): ${res.statusText}`);
   }
 
   const data = await res.json();

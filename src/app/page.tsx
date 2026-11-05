@@ -29,6 +29,7 @@ export default function MonitoringDashboard() {
   const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null);
   const [selectedTraceTree, setSelectedTraceTree] = useState<TraceTree | null>(null);
   const [selectedSpan, setSelectedSpan] = useState<SpanRecord | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const loadData = async () => {
     setIsRefreshing(true);
@@ -39,7 +40,14 @@ export default function MonitoringDashboard() {
         fetchSlowestSpans(25),
       ]);
 
-      if (tracesData.status === "fulfilled") setTraces(tracesData.value);
+      if (tracesData.status === "fulfilled") {
+        setTraces(tracesData.value);
+        setErrorMessage(null);
+      } else {
+        const msg = (tracesData.reason as Error)?.message || "Failed to load traces";
+        setErrorMessage(msg);
+      }
+
       if (statsData.status === "fulfilled") setStats(statsData.value);
       if (slowestData.status === "fulfilled") setSlowestSpans(slowestData.value);
 
@@ -50,8 +58,9 @@ export default function MonitoringDashboard() {
           setSelectedTraceTree(tree);
         } catch {}
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error("Failed to load monitoring data:", err);
+      setErrorMessage(err?.message || "An unexpected error occurred while loading monitoring data.");
     } finally {
       setIsRefreshing(false);
       setIsLoading(false);
@@ -94,6 +103,24 @@ export default function MonitoringDashboard() {
       />
 
       <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 space-y-6">
+        {/* Error / Auth Notice Banner */}
+        {errorMessage && (
+          <div className="flex items-center justify-between rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-xs text-red-600 dark:text-red-400 shadow-sm">
+            <div className="flex items-center space-x-2">
+              <span className="font-semibold">Notice:</span>
+              <span>{errorMessage}</span>
+            </div>
+            {errorMessage.includes("401") && (
+              <a
+                href="/login"
+                className="ml-4 rounded-md bg-accent px-3 py-1 font-medium text-white transition hover:opacity-90"
+              >
+                Log In
+              </a>
+            )}
+          </div>
+        )}
+
         {/* KPI Cards Overview */}
         <StatsCards traces={traces} />
 
