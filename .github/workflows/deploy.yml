@@ -1,0 +1,41 @@
+name: Deploy Monitoring
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Login to Docker Hub
+        run: |
+          echo "${{ secrets.DOCKER_TOKEN }}" | docker login \
+            --username "${{ secrets.DOCKER_USERNAME }}" \
+            --password-stdin
+
+      - name: Build Monitoring Image
+        env:
+          NEXT_PUBLIC_API_URL: ${{ secrets.NEXT_PUBLIC_API_URL || 'https://agentlytics.duckdns.org/api' }}
+          NEXT_PUBLIC_BASE_PATH: /monitoring
+        run: docker compose build monitoring
+
+      - name: Push Monitoring Image
+        run: docker compose push monitoring
+
+      - name: Deploy to OVH Cloud
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.OVH_HOST || secrets.LIGHTSAIL_HOST }}
+          username: ${{ secrets.OVH_USERNAME || 'ubuntu' }}
+          password: ${{ secrets.OVH_PASSWORD || secrets.LIGHTSAIL_SSH_KEY }}
+          script: |
+            cd ~/agentlytics/scripts
+            chmod +x deploy-monitoring.sh
+            ./deploy-monitoring.sh
+

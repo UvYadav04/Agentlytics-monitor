@@ -1,0 +1,14 @@
+services:
+  monitoring:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-https://agentlytics.duckdns.org/api}
+        NEXT_PUBLIC_BASE_PATH: ${NEXT_PUBLIC_BASE_PATH:-/monitoring}
+    image: itzdineshyadav/data-analyzer:monitoring
+    container_name: data-analyzer-monitoring
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+
