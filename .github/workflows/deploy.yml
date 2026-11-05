@@ -35,7 +35,27 @@ jobs:
           username: ${{ secrets.OVH_USERNAME || 'ubuntu' }}
           password: ${{ secrets.OVH_PASSWORD || secrets.LIGHTSAIL_SSH_KEY }}
           script: |
-            cd ~/agentlytics/scripts
-            chmod +x deploy-monitoring.sh
-            ./deploy-monitoring.sh
+            mkdir -p ~/agentlytics/monitoring
+            cat << 'EOF' > ~/agentlytics/monitoring/docker-compose.yml
+            services:
+              monitoring:
+                image: itzdineshyadav/data-analyzer:monitoring
+                container_name: data-analyzer-monitoring
+                restart: unless-stopped
+                ports:
+                  - "3001:3001"
+            EOF
 
+            echo "Stopping old monitoring container..."
+            docker stop data-analyzer-monitoring 2>/dev/null || true
+            docker rm data-analyzer-monitoring 2>/dev/null || true
+            docker rmi itzdineshyadav/data-analyzer:monitoring 2>/dev/null || true
+
+            echo "Pulling latest monitoring image..."
+            docker pull itzdineshyadav/data-analyzer:monitoring
+
+            echo "Starting monitoring container..."
+            cd ~/agentlytics/monitoring
+            docker compose up -d
+
+            echo "Monitoring deployment completed successfully."
