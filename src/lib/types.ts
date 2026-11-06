@@ -7,6 +7,7 @@ export type StepType =
   | "tool"
   | "agent"
   | "router"
+  | "database"
   | "custom";
 
 export type SpanStatus = "success" | "error" | "running";

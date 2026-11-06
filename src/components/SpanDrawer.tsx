@@ -5,15 +5,18 @@ import {
   Activity,
   AlertTriangle,
   ArrowRight,
+  BarChart3,
   Bot,
   Check,
   Clock,
   Coins,
   Copy,
   Cpu,
+  Database,
   FileCode,
   FileText,
   Sparkles,
+  Table,
   Terminal,
   Wrench,
   X,
@@ -59,7 +62,44 @@ export const SpanDrawer: React.FC<SpanDrawerProps> = ({ span, onClose }) => {
   const modelName = span.tags?.model || span.inputs?.model || "";
   const provider = span.tags?.provider || span.component.replace("llm.", "");
 
-  // Extract output text
+  // Detect specific payload categories
+  const isDbStep =
+    span.step_type === "database" ||
+    span.step_name.includes("database") ||
+    span.step_name.includes("query");
+
+  const isSandboxStep =
+    span.step_type === "sandbox" ||
+    span.step_name.includes("sandbox") ||
+    span.step_name.includes("run_python");
+
+  const isChartStep =
+    span.step_name.includes("visualization") ||
+    span.step_name.includes("chart");
+
+  // Extract DB specifics
+  const sqlStatement =
+    span.inputs?.query?.statement ||
+    (typeof span.inputs?.query === "string" ? span.inputs.query : null) ||
+    span.inputs?.statement;
+  const mongoPipeline = span.inputs?.query?.pipeline || span.inputs?.pipeline;
+  const queryRows: any[] =
+    span.outputs?.output?.rows ||
+    span.outputs?.rows ||
+    [];
+  const rowCount = span.metrics?.row_count ?? span.outputs?.output?.row_count ?? (queryRows ? queryRows.length : undefined);
+  const dbExecutionTime = span.metrics?.db_execution_time_ms ?? span.outputs?.output?.execution_time_ms;
+
+  // Extract Sandbox specifics
+  const pythonCode = span.inputs?.code || span.inputs?.script;
+  const sandboxStdout = span.outputs?.output?.stdout || span.outputs?.stdout;
+  const sandboxStderr = span.outputs?.output?.stderr || span.outputs?.stderr;
+  const sandboxArtifacts = span.outputs?.output?.artifacts || span.outputs?.artifacts;
+
+  // Extract Chart specifics
+  const chartSpec = span.outputs?.output?.specification || span.outputs?.specification;
+
+  // Extract general output text
   let outputText = "";
   if (span.outputs) {
     if (typeof span.outputs.content === "string") outputText = span.outputs.content;
@@ -173,6 +213,11 @@ export const SpanDrawer: React.FC<SpanDrawerProps> = ({ span, onClose }) => {
                 <div className="ml-1 border-l-2 border-border/80 pl-4 py-1 text-text-muted">
                   <span className="font-sans text-xs">Processing duration: </span>
                   <span className="font-bold text-accent">{formatDuration(span.duration_ms)}</span>
+                  {dbExecutionTime !== undefined && (
+                    <span className="text-[11px] text-cyan-700 ml-2 font-mono">
+                      (Engine time: {formatDuration(dbExecutionTime)})
+                    </span>
+                  )}
                   {span.ttft_ms && (
                     <span className="text-[11px] text-amber-700 ml-2">
                       (TTFT: {formatDuration(span.ttft_ms)})
@@ -204,7 +249,44 @@ export const SpanDrawer: React.FC<SpanDrawerProps> = ({ span, onClose }) => {
                 </button>
               </div>
 
-              {messages.length > 0 ? (
+              {/* SQL Statement Display */}
+              {sqlStatement && (
+                <div className="space-y-1.5">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-cyan-700 block">
+                    Executed SQL Statement
+                  </span>
+                  <div className="rounded-lg bg-slate-900 text-slate-100 p-3 font-mono text-xs overflow-x-auto whitespace-pre-wrap">
+                    <code>{sqlStatement}</code>
+                  </div>
+                </div>
+              )}
+
+              {/* MongoDB Pipeline Display */}
+              {mongoPipeline && (
+                <div className="space-y-1.5">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-700 block">
+                    MongoDB Aggregation Pipeline
+                  </span>
+                  <div className="rounded-lg bg-slate-900 text-slate-100 p-3 font-mono text-xs overflow-x-auto whitespace-pre-wrap">
+                    <code>{JSON.stringify(mongoPipeline, null, 2)}</code>
+                  </div>
+                </div>
+              )}
+
+              {/* Python Sandbox Code Display */}
+              {pythonCode && (
+                <div className="space-y-1.5">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-amber-700 block">
+                    Python Sandbox Script
+                  </span>
+                  <div className="rounded-lg bg-slate-900 text-slate-100 p-3 font-mono text-xs overflow-x-auto whitespace-pre-wrap max-h-60">
+                    <code>{pythonCode}</code>
+                  </div>
+                </div>
+              )}
+
+              {/* LLM Messages Display */}
+              {messages.length > 0 && !sqlStatement && !pythonCode && (
                 <div className="space-y-2">
                   {messages.map((m, idx) => (
                     <div key={idx} className="rounded-lg border border-border bg-bg-subtle p-2.5">
@@ -217,7 +299,10 @@ export const SpanDrawer: React.FC<SpanDrawerProps> = ({ span, onClose }) => {
                     </div>
                   ))}
                 </div>
-              ) : (
+              )}
+
+              {/* Fallback Input Display */}
+              {!sqlStatement && !mongoPipeline && !pythonCode && messages.length === 0 && (
                 <pre className="rounded-lg border border-border bg-bg-subtle p-3 font-mono text-[11px] text-text max-h-48 overflow-y-auto whitespace-pre-wrap">
                   {span.inputs && Object.keys(span.inputs).length > 0
                     ? JSON.stringify(span.inputs, null, 2)
@@ -242,9 +327,105 @@ export const SpanDrawer: React.FC<SpanDrawerProps> = ({ span, onClose }) => {
                 </button>
               </div>
 
-              <pre className="rounded-lg border border-border bg-bg-subtle p-3 font-mono text-[11px] text-text max-h-60 overflow-y-auto whitespace-pre-wrap">
-                {outputText || "No output generated or step currently in progress."}
-              </pre>
+              {/* Query Result Rows Table Preview */}
+              {queryRows && Array.isArray(queryRows) && queryRows.length > 0 && (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-cyan-700 flex items-center gap-1">
+                      <Table className="h-3 w-3" />
+                      Result Rows ({rowCount ?? queryRows.length} returned)
+                    </span>
+                  </div>
+                  <div className="overflow-x-auto rounded-lg border border-border">
+                    <table className="w-full text-left font-mono text-[11px]">
+                      <thead className="bg-bg-subtle border-b border-border text-text-muted font-semibold">
+                        <tr>
+                          {Object.keys(queryRows[0]).map((col) => (
+                            <th key={col} className="p-2 truncate max-w-[150px]">
+                              {col}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-border/60">
+                        {queryRows.slice(0, 10).map((row, rIdx) => (
+                          <tr key={rIdx} className="hover:bg-bg-subtle/50">
+                            {Object.values(row).map((val: any, vIdx) => (
+                              <td key={vIdx} className="p-2 truncate max-w-[150px] text-text">
+                                {typeof val === "object" ? JSON.stringify(val) : String(val)}
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  {queryRows.length > 10 && (
+                    <p className="text-[10px] text-text-muted italic">
+                      Showing first 10 rows of {queryRows.length}.
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {/* Sandbox Terminal STDOUT Output */}
+              {sandboxStdout && (
+                <div className="space-y-1.5">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-700 flex items-center gap-1">
+                    <Terminal className="h-3 w-3" />
+                    Sandbox STDOUT
+                  </span>
+                  <div className="rounded-lg bg-slate-900 text-emerald-400 p-3 font-mono text-xs overflow-x-auto whitespace-pre-wrap max-h-48">
+                    <code>{sandboxStdout}</code>
+                  </div>
+                </div>
+              )}
+
+              {/* Sandbox STDERR Errors */}
+              {sandboxStderr && (
+                <div className="space-y-1.5">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-red-700 flex items-center gap-1">
+                    <AlertTriangle className="h-3 w-3" />
+                    Sandbox STDERR
+                  </span>
+                  <div className="rounded-lg bg-red-950 text-red-200 p-3 font-mono text-xs overflow-x-auto whitespace-pre-wrap">
+                    <code>{sandboxStderr}</code>
+                  </div>
+                </div>
+              )}
+
+              {/* Chart Specification Preview */}
+              {chartSpec && (
+                <div className="space-y-1.5">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-purple-700 flex items-center gap-1">
+                    <BarChart3 className="h-3 w-3" />
+                    Chart Artifact Generated ({chartSpec.chart_type || "interactive"})
+                  </span>
+                  <div className="rounded-lg border border-border bg-bg-subtle p-3 space-y-1 font-mono text-xs">
+                    <div className="flex justify-between">
+                      <span className="text-text-muted">Chart ID:</span>
+                      <span className="font-bold text-accent">{chartSpec.chart_id}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-text-muted">Title:</span>
+                      <span className="text-text">{chartSpec.title}</span>
+                    </div>
+                    {chartSpec.location && (
+                      <div className="flex justify-between truncate">
+                        <span className="text-text-muted mr-2">Location:</span>
+                        <span className="text-text-muted truncate">{chartSpec.location}</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Fallback General Output Display */}
+              {(!queryRows || queryRows.length === 0) && !sandboxStdout && !chartSpec && (
+                <pre className="rounded-lg border border-border bg-bg-subtle p-3 font-mono text-[11px] text-text max-h-60 overflow-y-auto whitespace-pre-wrap">
+                  {outputText || "No output generated or step currently in progress."}
+                </pre>
+              )}
             </div>
           </div>
         )}
@@ -307,6 +488,18 @@ export const SpanDrawer: React.FC<SpanDrawerProps> = ({ span, onClose }) => {
                 <span className="text-text-muted">Execution Duration:</span>
                 <span className="font-mono font-bold text-accent">{formatDuration(span.duration_ms)}</span>
               </div>
+              {dbExecutionTime !== undefined && (
+                <div className="flex justify-between py-1 border-b border-border/60 text-cyan-800">
+                  <span>Engine Database Execution:</span>
+                  <span className="font-mono font-semibold">{formatDuration(dbExecutionTime)}</span>
+                </div>
+              )}
+              {rowCount !== undefined && (
+                <div className="flex justify-between py-1 border-b border-border/60 text-cyan-800">
+                  <span>Rows Returned:</span>
+                  <span className="font-mono font-semibold">{rowCount}</span>
+                </div>
+              )}
               {span.ttft_ms && (
                 <div className="flex justify-between py-1 border-b border-border/60 text-amber-700">
                   <span>TTFT (Time To First Token):</span>

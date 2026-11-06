@@ -5,6 +5,7 @@ import {
   Activity,
   ArrowDown,
   ArrowRight,
+  BarChart3,
   Bot,
   CheckCircle2,
   ChevronDown,
@@ -20,6 +21,7 @@ import {
   Filter,
   Layers,
   Sparkles,
+  Terminal,
   User,
   Wrench,
   X,
@@ -35,6 +37,22 @@ interface TraceAnalysisViewProps {
   onClose: () => void;
 }
 
+interface ExecutionStage {
+  id: string;
+  stageNumber: number;
+  stageType: "orchestrator" | "subagent" | "synthesis";
+  title: string;
+  subtitle: string;
+  badgeLabel: string;
+  badgeColor: { bg: string; text: string; border: string; dot: string };
+  component: string;
+  durationMs: number;
+  totalTokens: number;
+  agentSpan?: SpanRecord;
+  steps: SpanRecord[];
+  delegationTarget?: string;
+}
+
 export const TraceAnalysisView: React.FC<TraceAnalysisViewProps> = ({
   tree,
   selectedSpan,
@@ -42,7 +60,7 @@ export const TraceAnalysisView: React.FC<TraceAnalysisViewProps> = ({
   onClose,
 }) => {
   const [viewMode, setViewMode] = useState<"flow" | "waterfall">("flow");
-  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
+  const [collapsedStages, setCollapsedStages] = useState<Record<string, boolean>>({});
   const [copiedQuery, setCopiedQuery] = useState(false);
   const [copiedTraceId, setCopiedTraceId] = useState(false);
 
@@ -80,8 +98,8 @@ export const TraceAnalysisView: React.FC<TraceAnalysisViewProps> = ({
   const totalPromptTokens = allSpans.reduce((acc, s) => acc + (s.prompt_tokens || 0), 0);
   const totalCompletionTokens = allSpans.reduce((acc, s) => acc + (s.completion_tokens || 0), 0);
 
-  const toggleGroup = (id: string) => {
-    setCollapsedGroups((prev) => ({ ...prev, [id]: !prev[id] }));
+  const toggleStage = (id: string) => {
+    setCollapsedStages((prev) => ({ ...prev, [id]: !prev[id] }));
   };
 
   const handleCopyQuery = () => {
@@ -97,37 +115,8 @@ export const TraceAnalysisView: React.FC<TraceAnalysisViewProps> = ({
     setTimeout(() => setCopiedTraceId(false), 2000);
   };
 
-  const getStepIcon = (type: string) => {
-    switch (type) {
-      case "agent":
-        return <Bot className="h-4 w-4 text-indigo-600" />;
-      case "llm":
-        return <Sparkles className="h-4 w-4 text-purple-600" />;
-      case "tool":
-        return <Wrench className="h-4 w-4 text-emerald-600" />;
-      case "sandbox":
-        return <Code className="h-4 w-4 text-amber-600" />;
-      case "retriever":
-        return <Database className="h-4 w-4 text-teal-600" />;
-      case "reranker":
-        return <Filter className="h-4 w-4 text-pink-600" />;
-      default:
-        return <Activity className="h-4 w-4 text-slate-500" />;
-    }
-  };
-
-  // Helper to extract clean model or tool summary from a span
-  const getSpanSubtitle = (span: SpanRecord) => {
-    if (span.step_type === "llm") {
-      const model = span.tags?.model || span.inputs?.model;
-      const provider = span.tags?.provider || span.component.replace("llm.", "");
-      return `${provider.toUpperCase()}${model ? ` (${model})` : ""}`;
-    }
-    if (span.step_type === "agent") {
-      return span.component.replace("agent.", "").toUpperCase() + " AGENT";
-    }
-    return span.component;
-  };
+  // Build the hierarchical multi-agent stages
+  const stages = buildExecutionStages(tree, totalDurationMs);
 
   return (
     <div className="space-y-6">
@@ -241,12 +230,14 @@ export const TraceAnalysisView: React.FC<TraceAnalysisViewProps> = ({
 
           <div className="rounded-xl border border-border bg-bg p-3">
             <span className="text-[10px] font-semibold uppercase tracking-wider text-text-subtle block">
-              Execution Steps
+              Execution Stages
             </span>
             <div className="mt-1 flex items-baseline gap-1.5">
               <Layers className="h-4 w-4 text-indigo-600" />
-              <span className="text-lg font-bold text-text">{allSpans.length}</span>
-              <span className="text-[11px] text-text-subtle">spans</span>
+              <span className="text-lg font-bold text-text">{stages.length}</span>
+              <span className="text-[11px] text-text-subtle">
+                ({allSpans.length} total spans)
+              </span>
             </div>
           </div>
 
@@ -262,12 +253,12 @@ export const TraceAnalysisView: React.FC<TraceAnalysisViewProps> = ({
       </div>
 
       {/* 2. Main Analysis Section: View Switcher & Flow */}
-      <div className="rounded-2xl border border-border bg-bg-card p-6 shadow-card space-y-5">
+      <div className="rounded-2xl border border-border bg-bg-card p-6 shadow-card space-y-6">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between border-b border-border pb-4">
           <div>
-            <h3 className="text-base font-semibold text-text">Agent & Step Execution Flow</h3>
+            <h3 className="text-base font-semibold text-text">Hierarchical Agent & Step Execution Flow</h3>
             <p className="text-xs text-text-muted">
-              Step-by-step breakdown of how the query was parsed, routed, processed by agents, and resolved.
+              Orchestrator entry point, autonomous sub-agent execution, database queries, sandboxes, and response synthesis.
             </p>
           </div>
 
@@ -281,7 +272,7 @@ export const TraceAnalysisView: React.FC<TraceAnalysisViewProps> = ({
                   : "text-text-muted hover:text-text"
               }`}
             >
-              Structured Flow View
+              Structured Agent Flow
             </button>
             <button
               onClick={() => setViewMode("waterfall")}
@@ -296,21 +287,34 @@ export const TraceAnalysisView: React.FC<TraceAnalysisViewProps> = ({
           </div>
         </div>
 
-        {/* VIEW 1: STRUCTURED AGENT EXECUTION FLOW */}
+        {/* VIEW 1: STRUCTURED MULTI-AGENT EXECUTION FLOW */}
         {viewMode === "flow" && (
-          <div className="space-y-4">
-            {tree.roots.map((rootSpan, rootIdx) => (
-              <RootAgentCard
-                key={rootSpan.span_id}
-                span={rootSpan}
-                rootIndex={rootIdx + 1}
-                totalDurationMs={totalDurationMs}
-                selectedSpan={selectedSpan}
-                onSelectSpan={onSelectSpan}
-                collapsedGroups={collapsedGroups}
-                onToggleGroup={toggleGroup}
-                minStart={minStart}
-              />
+          <div className="space-y-6">
+            {stages.map((stage, sIdx) => (
+              <React.Fragment key={stage.id}>
+                {/* Connecting Delegation Arrow between stages */}
+                {sIdx > 0 && (
+                  <div className="flex items-center justify-center my-2">
+                    <div className="flex items-center gap-2 rounded-full border border-border bg-bg-subtle px-4 py-1.5 text-xs text-text-muted shadow-sm">
+                      <ArrowDown className="h-3.5 w-3.5 text-accent animate-bounce" />
+                      <span className="font-medium text-text">
+                        {stages[sIdx - 1].delegationTarget || `Delegated to ${stage.title}`}
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Main Stage Card */}
+                <StageCard
+                  stage={stage}
+                  totalDurationMs={totalDurationMs}
+                  selectedSpan={selectedSpan}
+                  onSelectSpan={onSelectSpan}
+                  isCollapsed={!!collapsedStages[stage.id]}
+                  onToggleCollapse={() => toggleStage(stage.id)}
+                  minStart={minStart}
+                />
+              </React.Fragment>
             ))}
           </div>
         )}
@@ -341,93 +345,109 @@ export const TraceAnalysisView: React.FC<TraceAnalysisViewProps> = ({
   );
 };
 
-// Subcomponent: Root Agent Card (e.g. OrchestratorAgent)
-interface RootAgentCardProps {
-  span: SpanRecord;
-  rootIndex: number;
+// Subcomponent: Main Stage Card (e.g. Orchestrator or Sub-Agent like DatabaseAgent)
+interface StageCardProps {
+  stage: ExecutionStage;
   totalDurationMs: number;
   selectedSpan: SpanRecord | null;
   onSelectSpan: (span: SpanRecord) => void;
-  collapsedGroups: Record<string, boolean>;
-  onToggleGroup: (id: string) => void;
+  isCollapsed: boolean;
+  onToggleCollapse: () => void;
   minStart: number;
 }
 
-const RootAgentCard: React.FC<RootAgentCardProps> = ({
-  span,
-  rootIndex,
+const StageCard: React.FC<StageCardProps> = ({
+  stage,
   totalDurationMs,
   selectedSpan,
   onSelectSpan,
-  collapsedGroups,
-  onToggleGroup,
+  isCollapsed,
+  onToggleCollapse,
   minStart,
 }) => {
-  const isSelected = selectedSpan?.span_id === span.span_id;
-  const isCollapsed = !!collapsedGroups[span.span_id];
-  const children = span.children || [];
-  const percentOfTotal = ((span.duration_ms / totalDurationMs) * 100).toFixed(1);
+  const isAgentSelected = stage.agentSpan && selectedSpan?.span_id === stage.agentSpan.span_id;
+  const percentOfTotal = ((stage.durationMs / totalDurationMs) * 100).toFixed(1);
+
+  // Pick stage icon
+  const getStageIcon = () => {
+    if (stage.stageType === "orchestrator") {
+      return <Bot className="h-5 w-5 text-indigo-700" />;
+    }
+    if (stage.badgeLabel.includes("DATABASE")) {
+      return <Database className="h-5 w-5 text-cyan-700" />;
+    }
+    if (stage.badgeLabel.includes("TABULAR")) {
+      return <Code className="h-5 w-5 text-amber-700" />;
+    }
+    if (stage.badgeLabel.includes("DOCUMENT")) {
+      return <FileText className="h-5 w-5 text-teal-700" />;
+    }
+    return <Sparkles className="h-5 w-5 text-purple-700" />;
+  };
 
   return (
     <div
       className={`rounded-xl border transition-all ${
-        isSelected
-          ? "border-accent ring-2 ring-accent/20 bg-bg-card"
-          : "border-border bg-bg-card hover:border-dark"
+        isAgentSelected
+          ? "border-accent ring-2 ring-accent/20 bg-bg-card shadow-md"
+          : "border-border bg-bg-card hover:border-dark shadow-sm"
       }`}
     >
-      {/* Agent Card Header */}
+      {/* Top Stage Header */}
       <div
-        onClick={() => onSelectSpan(span)}
+        onClick={() => {
+          if (stage.agentSpan) onSelectSpan(stage.agentSpan);
+        }}
         className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between cursor-pointer border-b border-border/80 bg-gradient-to-r from-bg-subtle/80 to-bg-card rounded-t-xl"
       >
         <div className="flex items-center gap-3">
-          {children.length > 0 && (
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                onToggleGroup(span.span_id);
-              }}
-              className="rounded p-1 text-text-subtle hover:bg-bg hover:text-text transition-colors"
-            >
-              {isCollapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-            </button>
-          )}
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleCollapse();
+            }}
+            className="rounded p-1 text-text-subtle hover:bg-bg hover:text-text transition-colors"
+          >
+            {isCollapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+          </button>
 
-          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-indigo-50 border border-indigo-200 text-indigo-700">
-            <Bot className="h-5 w-5" />
+          {/* Stage Number Badge */}
+          <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-bg-subtle text-xs font-bold text-text border border-border">
+            {stage.stageNumber}
+          </span>
+
+          {/* Icon Box */}
+          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-bg-subtle border border-border">
+            {getStageIcon()}
           </div>
 
           <div>
-            <div className="flex items-center gap-2">
-              <span className="font-semibold text-text text-sm sm:text-base">
-                {span.step_name === "orchestrator_agent_run"
-                  ? "Main Orchestrator Agent"
-                  : span.step_name}
-              </span>
-              <span className="rounded-md bg-indigo-50 px-2 py-0.5 text-[10px] font-semibold text-indigo-700 border border-indigo-200 uppercase">
-                Primary Agent
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="font-bold text-text text-sm sm:text-base">{stage.title}</span>
+              <span
+                className={`rounded-md px-2 py-0.5 text-[10px] font-semibold border ${stage.badgeColor.bg} ${stage.badgeColor.text} ${stage.badgeColor.border} uppercase`}
+              >
+                {stage.badgeLabel}
               </span>
             </div>
-            <p className="text-xs text-text-muted font-mono">{span.component}</p>
+            <p className="text-xs text-text-muted mt-0.5">{stage.subtitle}</p>
           </div>
         </div>
 
-        {/* Timing & Tokens */}
+        {/* Timing, Tokens & Relative Share */}
         <div className="flex items-center gap-4 text-xs">
-          {span.total_tokens > 0 && (
+          {stage.totalTokens > 0 && (
             <div className="text-right">
               <span className="text-[10px] text-text-subtle uppercase block">Tokens</span>
-              <span className="font-mono font-medium text-text">{formatTokens(span.total_tokens)}</span>
+              <span className="font-mono font-medium text-text">{formatTokens(stage.totalTokens)}</span>
             </div>
           )}
 
           <div className="text-right min-w-[80px]">
             <span className="text-[10px] text-text-subtle uppercase block">Duration</span>
-            <span className="font-mono font-bold text-accent">{formatDuration(span.duration_ms)}</span>
+            <span className="font-mono font-bold text-accent">{formatDuration(stage.durationMs)}</span>
           </div>
 
-          {/* Relative Duration Pill */}
           <div className="hidden sm:block text-right">
             <span className="text-[10px] text-text-subtle uppercase block">Share</span>
             <span className="text-xs font-semibold text-text-muted">{percentOfTotal}%</span>
@@ -435,23 +455,24 @@ const RootAgentCard: React.FC<RootAgentCardProps> = ({
         </div>
       </div>
 
-      {/* Nested Steps List (Under this Agent) */}
-      {!isCollapsed && children.length > 0 && (
+      {/* Nested Steps List */}
+      {!isCollapsed && stage.steps.length > 0 && (
         <div className="p-4 space-y-3 bg-bg/40 rounded-b-xl">
           <div className="flex items-center justify-between text-xs text-text-muted font-medium px-2 pb-1 border-b border-border/60">
-            <span>Execution Chain ({children.length} nested operations)</span>
-            <span>Duration & Share of Query</span>
+            <span>
+              Nested Operations ({stage.steps.length} step{stage.steps.length !== 1 ? "s" : ""})
+            </span>
+            <span>Duration & Share of Total</span>
           </div>
 
           <div className="space-y-2">
-            {children.map((childSpan, idx) => (
+            {stage.steps.map((childSpan, idx) => (
               <StepItem
                 key={childSpan.span_id}
                 span={childSpan}
                 stepIndex={idx + 1}
-                parentSpan={span}
+                stageNumber={stage.stageNumber}
                 totalDurationMs={totalDurationMs}
-                minStart={minStart}
                 selectedSpan={selectedSpan}
                 onSelectSpan={onSelectSpan}
               />
@@ -463,13 +484,12 @@ const RootAgentCard: React.FC<RootAgentCardProps> = ({
   );
 };
 
-// Subcomponent: Step Item inside an Agent Card
+// Subcomponent: Individual Step Item inside an Agent Stage
 interface StepItemProps {
   span: SpanRecord;
   stepIndex: number;
-  parentSpan: SpanRecord;
+  stageNumber: number;
   totalDurationMs: number;
-  minStart: number;
   selectedSpan: SpanRecord | null;
   onSelectSpan: (span: SpanRecord) => void;
 }
@@ -477,37 +497,78 @@ interface StepItemProps {
 const StepItem: React.FC<StepItemProps> = ({
   span,
   stepIndex,
-  parentSpan,
+  stageNumber,
   totalDurationMs,
-  minStart,
   selectedSpan,
   onSelectSpan,
 }) => {
   const isSelected = selectedSpan?.span_id === span.span_id;
   const badge = getStepTypeBadgeColor(span.step_type);
-  const percentOfTotal = Math.min(100, Math.max(1, (span.duration_ms / totalDurationMs) * 100));
+  const percentOfTotal = Math.min(100, Math.max(0.5, (span.duration_ms / totalDurationMs) * 100));
 
-  // Determine role/description of the step
+  // Determine Semantic Details
+  const isDbStep =
+    span.step_type === "database" ||
+    span.step_name.includes("database") ||
+    span.step_name.includes("query") ||
+    span.step_name.includes("schema");
+
+  const isSandboxStep =
+    span.step_type === "sandbox" ||
+    span.step_name.includes("sandbox") ||
+    span.step_name.includes("run_python");
+
+  const isChartStep =
+    span.step_name.includes("visualization") ||
+    span.step_name.includes("chart");
+
+  // Semantic Titles
   let stepTitle = span.step_name;
-  let modelInfo = "";
+  let stepDescription = "";
 
-  if (span.step_type === "llm") {
+  if (span.step_name === "inspect_database_schema") {
+    stepTitle = "Inspect Database Schema";
+    stepDescription = "Read tables, columns, relations & metadata";
+  } else if (span.step_name === "execute_database_query") {
+    stepTitle = "Execute Database Query";
+    stepDescription = "Direct read-only SQL / MongoDB execution";
+  } else if (span.step_name === "propose_visualization" || span.step_name === "create_visualizations") {
+    stepTitle = "Generate Interactive Visualization";
+    stepDescription = "Configured and staged chart artifact";
+  } else if (span.step_name === "run_python_sandbox" || span.step_type === "sandbox") {
+    stepTitle = "Execute Python in Isolated Sandbox";
+    stepDescription = "Run data transformation & computation script";
+  } else if (span.step_type === "retriever" || span.step_name === "search_documents") {
+    stepTitle = "Semantic Document Search (RAG)";
+    stepDescription = "Chroma vector store similarity query";
+  } else if (span.step_type === "reranker") {
+    stepTitle = "Cross-Encoder Reranker";
+    stepDescription = "Precision ranking of retrieved passages";
+  } else if (span.step_type === "llm") {
     const provider = span.tags?.provider || span.component.replace("llm.", "");
     const model = span.tags?.model || span.inputs?.model || "";
-    modelInfo = `${provider.toUpperCase()} • ${model || "Default Model"}`;
+    stepDescription = `${provider.toUpperCase()} • ${model || "Default Model"}`;
 
-    if (stepIndex === 1) {
+    if (stageNumber === 1 && stepIndex === 1) {
       stepTitle = "Query Analysis & Intent Planning";
-    } else if (span.tags?.messages?.[0]?.content?.includes("Database Analysis Agent")) {
-      stepTitle = "Database Agent SQL & Schema Reasoning";
-    } else {
+    } else if (span.step_name.includes("create")) {
       stepTitle = "Response Synthesis & Reasoning";
     }
-  } else if (span.step_type === "agent") {
-    stepTitle = span.step_name.replace(/_/g, " ").toUpperCase();
   }
 
-  // Duration color highlight
+  // Extract previews from inputs / outputs
+  let sqlPreview = "";
+  if (span.inputs) {
+    if (span.inputs.query?.statement) sqlPreview = String(span.inputs.query.statement);
+    else if (span.inputs.query?.pipeline) sqlPreview = JSON.stringify(span.inputs.query.pipeline);
+    else if (span.inputs.statement) sqlPreview = String(span.inputs.statement);
+    else if (span.inputs.code) sqlPreview = String(span.inputs.code);
+  }
+
+  const rowCount = span.metrics?.row_count ?? span.outputs?.output?.row_count;
+  const dbExecTimeMs = span.metrics?.db_execution_time_ms ?? span.outputs?.output?.execution_time_ms;
+  const chartType = span.inputs?.chart_type ?? span.outputs?.output?.specification?.chart_type;
+
   const isSlow = span.duration_ms > 10000;
   const isMedium = span.duration_ms > 3000;
 
@@ -524,7 +585,7 @@ const StepItem: React.FC<StepItemProps> = ({
         {/* Left: Step Index, Icon, Name, Type Badge */}
         <div className="flex items-center gap-3">
           <span className="flex h-6 w-6 items-center justify-center rounded-full bg-bg-subtle text-[11px] font-bold text-text-muted border border-border">
-            {stepIndex}
+            {stageNumber}.{stepIndex}
           </span>
 
           <span
@@ -534,25 +595,56 @@ const StepItem: React.FC<StepItemProps> = ({
           </span>
 
           <div>
-            <div className="flex items-center gap-2">
-              <span className="font-medium text-text text-xs sm:text-sm">{stepTitle}</span>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="font-semibold text-text text-xs sm:text-sm">{stepTitle}</span>
               <span className="font-mono text-[11px] text-text-subtle">({span.step_name})</span>
             </div>
-            {modelInfo && <p className="text-[11px] text-text-muted font-mono">{modelInfo}</p>}
+            {stepDescription && (
+              <p className="text-[11px] text-text-muted font-mono">{stepDescription}</p>
+            )}
           </div>
         </div>
 
-        {/* Right: Tokens & Timing */}
-        <div className="flex items-center gap-4 text-xs">
+        {/* Right: Specific Tool Chips & Latency Timing */}
+        <div className="flex flex-wrap items-center gap-3 text-xs justify-end">
+          {/* Row Count Chip */}
+          {rowCount !== undefined && (
+            <span className="rounded-md bg-cyan-50 px-2 py-0.5 text-[11px] font-semibold text-cyan-800 border border-cyan-200">
+              {rowCount} row{rowCount !== 1 ? "s" : ""}
+            </span>
+          )}
+
+          {/* Database internal query time */}
+          {dbExecTimeMs !== undefined && (
+            <span className="rounded-md bg-teal-50 px-2 py-0.5 text-[11px] font-semibold text-teal-800 border border-teal-200 font-mono">
+              DB: {formatDuration(dbExecTimeMs)}
+            </span>
+          )}
+
+          {/* Chart Type Chip */}
+          {chartType && (
+            <span className="rounded-md bg-purple-50 px-2 py-0.5 text-[11px] font-semibold text-purple-800 border border-purple-200 flex items-center gap-1">
+              <BarChart3 className="h-3 w-3" />
+              <span>{chartType} chart</span>
+            </span>
+          )}
+
+          {/* TTFT for LLM calls */}
+          {span.ttft_ms && (
+            <span className="rounded-md bg-amber-50 px-2 py-0.5 text-[11px] font-mono font-medium text-amber-800 border border-amber-200">
+              TTFT: {formatDuration(span.ttft_ms)}
+            </span>
+          )}
+
+          {/* Tokens */}
           {span.total_tokens > 0 && (
             <div className="text-right">
-              <span className="text-[10px] text-text-subtle uppercase block">Tokens</span>
-              <span className="font-mono text-text font-medium">{formatTokens(span.total_tokens)}</span>
+              <span className="font-mono text-text font-medium">{formatTokens(span.total_tokens)} toks</span>
             </div>
           )}
 
+          {/* Step Duration */}
           <div className="text-right min-w-[70px]">
-            <span className="text-[10px] text-text-subtle uppercase block">Duration</span>
             <span
               className={`font-mono font-bold ${
                 isSlow ? "text-red-600" : isMedium ? "text-amber-600" : "text-accent"
@@ -562,15 +654,24 @@ const StepItem: React.FC<StepItemProps> = ({
             </span>
           </div>
 
+          {/* Share */}
           <div className="text-right min-w-[45px]">
-            <span className="text-[10px] text-text-subtle uppercase block">Share</span>
             <span className="text-xs font-semibold text-text-muted">{percentOfTotal.toFixed(1)}%</span>
           </div>
         </div>
       </div>
 
+      {/* SQL Snippet / Code Preview if available */}
+      {sqlPreview && (
+        <div className="rounded-lg bg-bg-subtle p-2 border border-border/80 font-mono text-[11px] text-text-muted truncate max-w-full">
+          <span className="text-accent font-semibold mr-1.5">&gt;</span>
+          {sqlPreview.slice(0, 120)}
+          {sqlPreview.length > 120 ? "..." : ""}
+        </div>
+      )}
+
       {/* Visual Relative Duration Bar */}
-      <div className="mt-1 flex items-center gap-2">
+      <div className="flex items-center gap-2">
         <div className="h-1.5 w-full rounded-full bg-bg-subtle overflow-hidden border border-border/40">
           <div
             className={`h-full rounded-full transition-all ${
@@ -580,6 +681,8 @@ const StepItem: React.FC<StepItemProps> = ({
                 ? "bg-amber-500"
                 : span.step_type === "llm"
                 ? "bg-purple-500"
+                : span.step_type === "database"
+                ? "bg-cyan-500"
                 : "bg-indigo-500"
             }`}
             style={{ width: `${percentOfTotal}%` }}
@@ -643,6 +746,8 @@ const renderWaterfallRow = (
                   ? "bg-purple-500"
                   : span.step_type === "agent"
                   ? "bg-indigo-500"
+                  : span.step_type === "database"
+                  ? "bg-cyan-500"
                   : "bg-accent"
               }`}
               style={{ left: `${leftPct}%`, width: `${widthPct}%` }}
@@ -659,3 +764,248 @@ const renderWaterfallRow = (
   );
 };
 
+// Helper: Partition the trace tree into clean Multi-Agent stages
+function buildExecutionStages(tree: TraceTree, totalDurationMs: number): ExecutionStage[] {
+  const root = tree.roots[0] || tree.spans[0];
+  if (!root) return [];
+
+  const children = root.children || [];
+  const stages: ExecutionStage[] = [];
+
+  // Check if explicit sub-agent spans exist among children
+  const explicitSubAgents = children.filter(
+    (c) =>
+      c.step_type === "agent" ||
+      (c.component.startsWith("agent.") && c.component !== "agent.orchestrator")
+  );
+
+  if (explicitSubAgents.length > 0) {
+    // 1. Initial Orchestrator Stage (All spans before the first sub-agent)
+    const firstSubAgentStart = explicitSubAgents[0].start_time;
+    const orchestratorInitialSteps = children.filter(
+      (c) => c.end_time <= firstSubAgentStart && !explicitSubAgents.includes(c)
+    );
+
+    const initialTokens = orchestratorInitialSteps.reduce((acc, s) => acc + (s.total_tokens || 0), 0);
+    const initialDuration =
+      orchestratorInitialSteps.length > 0
+        ? orchestratorInitialSteps.reduce((acc, s) => acc + s.duration_ms, 0)
+        : root.duration_ms * 0.15;
+
+    stages.push({
+      id: "stage-1-orchestrator",
+      stageNumber: 1,
+      stageType: "orchestrator",
+      title: "Main Orchestrator Agent",
+      subtitle: "Entrypoint: Query analysis, intent decomposition, and delegation routing",
+      badgeLabel: "PRIMARY ORCHESTRATOR",
+      badgeColor: { bg: "bg-indigo-50", text: "text-indigo-700", border: "border-indigo-200", dot: "bg-indigo-500" },
+      component: "agent.orchestrator",
+      durationMs: initialDuration,
+      totalTokens: initialTokens,
+      agentSpan: root,
+      steps: orchestratorInitialSteps,
+      delegationTarget: `Delegated task to ${formatAgentName(explicitSubAgents[0].component)}`,
+    });
+
+    // 2. Sub-Agent Stages
+    explicitSubAgents.forEach((subAgentSpan, idx) => {
+      const subSteps = subAgentSpan.children || [];
+      const subTokens =
+        (subAgentSpan.total_tokens || 0) +
+        subSteps.reduce((acc, s) => acc + (s.total_tokens || 0), 0);
+
+      const agentMeta = getAgentMeta(subAgentSpan.component);
+
+      stages.push({
+        id: `stage-${idx + 2}-${subAgentSpan.span_id}`,
+        stageNumber: idx + 2,
+        stageType: "subagent",
+        title: `Sub-Agent: ${agentMeta.title}`,
+        subtitle: agentMeta.subtitle,
+        badgeLabel: agentMeta.badgeLabel,
+        badgeColor: agentMeta.badgeColor,
+        component: subAgentSpan.component,
+        durationMs: subAgentSpan.duration_ms,
+        totalTokens: subTokens,
+        agentSpan: subAgentSpan,
+        steps: subSteps,
+        delegationTarget:
+          idx < explicitSubAgents.length - 1
+            ? `Transferred findings to ${formatAgentName(explicitSubAgents[idx + 1].component)}`
+            : "Findings synthesized and returned to Orchestrator",
+      });
+    });
+
+    // 3. Final Synthesis Stage (Orchestrator spans after the last sub-agent)
+    const lastSubAgentEnd = explicitSubAgents[explicitSubAgents.length - 1].end_time;
+    const finalSteps = children.filter(
+      (c) => c.start_time >= lastSubAgentEnd && !explicitSubAgents.includes(c)
+    );
+
+    if (finalSteps.length > 0) {
+      const finalTokens = finalSteps.reduce((acc, s) => acc + (s.total_tokens || 0), 0);
+      const finalDuration = finalSteps.reduce((acc, s) => acc + s.duration_ms, 0);
+
+      stages.push({
+        id: `stage-${stages.length + 1}-synthesis`,
+        stageNumber: stages.length + 1,
+        stageType: "synthesis",
+        title: "Final Response Synthesis & Delivery",
+        subtitle: "Main Orchestrator consolidates sub-agent findings and delivers final structured response",
+        badgeLabel: "FINAL SYNTHESIS",
+        badgeColor: { bg: "bg-purple-50", text: "text-purple-700", border: "border-purple-200", dot: "bg-purple-500" },
+        component: "agent.orchestrator",
+        durationMs: finalDuration,
+        totalTokens: finalTokens,
+        agentSpan: root,
+        steps: finalSteps,
+      });
+    }
+
+    return stages;
+  }
+
+  // Fallback: If children are flat (e.g. historical traces where DatabaseAgent was invoked without a wrapper)
+  if (children.length >= 3) {
+    // Step 1 is Planning
+    const step1 = children[0];
+    // Last step is Synthesis
+    const lastStep = children[children.length - 1];
+    // Middle steps belong to the Sub-Agent (Database or Tabular)
+    const middleSteps = children.slice(1, children.length - 1);
+
+    // Detect if this was a database query or tabular analysis
+    const hasDbIndicators = middleSteps.some(
+      (s) =>
+        s.step_name.includes("database") ||
+        s.component.includes("database") ||
+        s.tags?.messages?.[0]?.content?.includes("Database") ||
+        s.inputs?.query
+    );
+
+    const subAgentType = hasDbIndicators ? "Database Analysis Agent" : "Specialized Domain Sub-Agent";
+    const subAgentBadge = hasDbIndicators ? "SUB-AGENT: DATABASE" : "SUB-AGENT: DOMAIN";
+
+    // Stage 1: Orchestrator Planning
+    stages.push({
+      id: "stage-1-orchestrator",
+      stageNumber: 1,
+      stageType: "orchestrator",
+      title: "Main Orchestrator Agent",
+      subtitle: "Entrypoint: Query analysis, intent decomposition, and delegation routing",
+      badgeLabel: "PRIMARY ORCHESTRATOR",
+      badgeColor: { bg: "bg-indigo-50", text: "text-indigo-700", border: "border-indigo-200", dot: "bg-indigo-500" },
+      component: "agent.orchestrator",
+      durationMs: step1.duration_ms,
+      totalTokens: step1.total_tokens || 0,
+      agentSpan: root,
+      steps: [step1],
+      delegationTarget: `Delegated task to ${subAgentType}`,
+    });
+
+    // Stage 2: Sub-Agent Execution
+    const midDuration = middleSteps.reduce((acc, s) => acc + s.duration_ms, 0);
+    const midTokens = middleSteps.reduce((acc, s) => acc + (s.total_tokens || 0), 0);
+
+    stages.push({
+      id: "stage-2-subagent",
+      stageNumber: 2,
+      stageType: "subagent",
+      title: `Sub-Agent: ${subAgentType}`,
+      subtitle: "Autonomous schema discovery, SQL generation, execution, and visualization proposal",
+      badgeLabel: subAgentBadge,
+      badgeColor: { bg: "bg-cyan-50", text: "text-cyan-800", border: "border-cyan-200", dot: "bg-cyan-500" },
+      component: hasDbIndicators ? "agent.database" : "agent.domain",
+      durationMs: midDuration,
+      totalTokens: midTokens,
+      steps: middleSteps,
+      delegationTarget: "Findings synthesized and returned to Orchestrator",
+    });
+
+    // Stage 3: Final Synthesis
+    stages.push({
+      id: "stage-3-synthesis",
+      stageNumber: 3,
+      stageType: "synthesis",
+      title: "Final Response Synthesis & Delivery",
+      subtitle: "Main Orchestrator consolidates findings and formats final answer to user",
+      badgeLabel: "FINAL SYNTHESIS",
+      badgeColor: { bg: "bg-purple-50", text: "text-purple-700", border: "border-purple-200", dot: "bg-purple-500" },
+      component: "agent.orchestrator",
+      durationMs: lastStep.duration_ms,
+      totalTokens: lastStep.total_tokens || 0,
+      steps: [lastStep],
+    });
+
+    return stages;
+  }
+
+  // Single Stage: Orchestrator executed everything directly
+  stages.push({
+    id: "stage-1-orchestrator",
+    stageNumber: 1,
+    stageType: "orchestrator",
+    title: root.step_name === "orchestrator_agent_run" ? "Main Orchestrator Agent" : root.step_name,
+    subtitle: "Complete autonomous query resolution chain",
+    badgeLabel: "PRIMARY AGENT",
+    badgeColor: { bg: "bg-indigo-50", text: "text-indigo-700", border: "border-indigo-200", dot: "bg-indigo-500" },
+    component: root.component,
+    durationMs: root.duration_ms,
+    totalTokens: root.total_tokens || 0,
+    agentSpan: root,
+    steps: children,
+  });
+
+  return stages;
+}
+
+// Helpers for Agent Metadata
+function formatAgentName(component: string): string {
+  if (component.includes("database")) return "Database Analysis Agent";
+  if (component.includes("tabular")) return "Tabular Data Agent";
+  if (component.includes("document_processor")) return "Document Batch Processor";
+  if (component.includes("document")) return "Document RAG Agent";
+  return component.replace("agent.", "").toUpperCase() + " Agent";
+}
+
+function getAgentMeta(component: string) {
+  if (component.includes("database")) {
+    return {
+      title: "Database Analysis Agent",
+      subtitle: "Autonomous schema discovery, SQL generation, database query execution & visualization",
+      badgeLabel: "SUB-AGENT: DATABASE",
+      badgeColor: { bg: "bg-cyan-50", text: "text-cyan-800", border: "border-cyan-200", dot: "bg-cyan-500" },
+    };
+  }
+  if (component.includes("tabular")) {
+    return {
+      title: "Tabular Data Agent",
+      subtitle: "Python code sandbox execution, multi-table aggregation, and chart generation",
+      badgeLabel: "SUB-AGENT: TABULAR",
+      badgeColor: { bg: "bg-amber-50", text: "text-amber-800", border: "border-amber-200", dot: "bg-amber-500" },
+    };
+  }
+  if (component.includes("document_processor")) {
+    return {
+      title: "Document Batch Processor",
+      subtitle: "Deterministic whole-document parallel chunk synthesis and comprehensive extraction",
+      badgeLabel: "SUB-AGENT: PROCESSOR",
+      badgeColor: { bg: "bg-sky-50", text: "text-sky-800", border: "border-sky-200", dot: "bg-sky-500" },
+    };
+  }
+  if (component.includes("document")) {
+    return {
+      title: "Document RAG Agent",
+      subtitle: "Targeted passage retrieval, cross-encoder reranking, and citation verification",
+      badgeLabel: "SUB-AGENT: DOCUMENT",
+      badgeColor: { bg: "bg-teal-50", text: "text-teal-800", border: "border-teal-200", dot: "bg-teal-500" },
+    };
+  }
+  return {
+    title: formatAgentName(component),
+    subtitle: "Specialized autonomous agent execution",
+    badgeLabel: "SUB-AGENT",
+    badgeColor: { bg: "bg-indigo-50", text: "text-indigo-800", border: "border-indigo-200", dot: "bg-indigo-500" },
+  };
+}
