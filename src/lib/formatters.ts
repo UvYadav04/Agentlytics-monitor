@@ -22,32 +22,37 @@ export function formatTokens(count: number): string {
 export function formatTimestamp(isoString: string): string {
   try {
     const d = new Date(isoString);
-    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    return d.toLocaleString([], {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
   } catch {
     return isoString;
   }
 }
 
-export function getStepTypeBadgeColor(type: string): { bg: string; text: string; border: string } {
+export function getStepTypeBadgeColor(type: string): { bg: string; text: string; border: string; dot: string } {
   switch (type) {
     case "llm":
-      return { bg: "bg-indigo-500/10", text: "text-indigo-400", border: "border-indigo-500/30" };
+      return { bg: "bg-purple-50", text: "text-purple-700", border: "border-purple-200", dot: "bg-purple-500" };
     case "retriever":
-      return { bg: "bg-emerald-500/10", text: "text-emerald-400", border: "border-emerald-500/30" };
+      return { bg: "bg-teal-50", text: "text-teal-700", border: "border-teal-200", dot: "bg-teal-500" };
     case "reranker":
-      return { bg: "bg-pink-500/10", text: "text-pink-400", border: "border-pink-500/30" };
+      return { bg: "bg-pink-50", text: "text-pink-700", border: "border-pink-200", dot: "bg-pink-500" };
     case "generator":
-      return { bg: "bg-sky-500/10", text: "text-sky-400", border: "border-sky-500/30" };
+      return { bg: "bg-sky-50", text: "text-sky-700", border: "border-sky-200", dot: "bg-sky-500" };
     case "sandbox":
-      return { bg: "bg-amber-500/10", text: "text-amber-400", border: "border-amber-500/30" };
+      return { bg: "bg-amber-50", text: "text-amber-800", border: "border-amber-200", dot: "bg-amber-500" };
     case "agent":
-      return { bg: "bg-purple-500/10", text: "text-purple-400", border: "border-purple-500/30" };
+      return { bg: "bg-indigo-50", text: "text-indigo-700", border: "border-indigo-200", dot: "bg-indigo-500" };
     case "tool":
-      return { bg: "bg-teal-500/10", text: "text-teal-400", border: "border-teal-500/30" };
+      return { bg: "bg-emerald-50", text: "text-emerald-700", border: "border-emerald-200", dot: "bg-emerald-500" };
     case "router":
-      return { bg: "bg-orange-500/10", text: "text-orange-400", border: "border-orange-500/30" };
+      return { bg: "bg-orange-50", text: "text-orange-700", border: "border-orange-200", dot: "bg-orange-500" };
     default:
-      return { bg: "bg-slate-500/10", text: "text-slate-400", border: "border-slate-500/30" };
+      return { bg: "bg-slate-100", text: "text-slate-700", border: "border-slate-200", dot: "bg-slate-500" };
   }
 }
-

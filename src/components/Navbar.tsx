@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { Activity, Clock, RefreshCw, Zap } from "lucide-react";
+import { Activity, Clock, RefreshCw, Sparkles } from "lucide-react";
 
 interface NavbarProps {
   activeTab: "traces" | "stats" | "bottlenecks";
@@ -21,41 +21,41 @@ export const Navbar: React.FC<NavbarProps> = ({
   isRefreshing,
 }) => {
   return (
-    <header className="sticky top-0 z-40 w-full border-b border-border bg-bg/80 backdrop-blur-md">
+    <header className="sticky top-0 z-40 w-full border-b border-border bg-bg-card/90 backdrop-blur-md shadow-sm">
       <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8">
         {/* Brand */}
         <div className="flex items-center space-x-3">
-          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-accent/15 text-accent border border-accent/30 shadow-sm">
-            <Activity className="h-5 w-5" />
+          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-accent text-white shadow-sm font-serif font-bold text-lg">
+            Q
           </div>
           <div>
             <div className="flex items-center space-x-2">
-              <span className="font-semibold tracking-tight text-text">DataAnalyzer</span>
-              <span className="rounded bg-accent/20 px-1.5 py-0.5 text-[11px] font-medium text-accent">
+              <span className="font-bold tracking-tight text-text text-base">Quarry</span>
+              <span className="rounded-full bg-accent/10 px-2 py-0.5 text-[11px] font-semibold text-accent border border-accent/20">
                 Observability
               </span>
             </div>
-            <p className="text-[11px] text-text-subtle">Real-time LLM & RAG Tracing</p>
+            <p className="text-[11px] text-text-muted">Agent & Pipeline Tracing</p>
           </div>
         </div>
 
         {/* Navigation Tabs */}
-        <nav className="flex items-center space-x-1 rounded-lg bg-bg-card p-1 border border-border">
+        <nav className="flex items-center space-x-1 rounded-xl bg-bg-subtle p-1 border border-border">
           <button
             onClick={() => setActiveTab("traces")}
-            className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+            className={`rounded-lg px-3.5 py-1.5 text-xs font-semibold transition-all ${
               activeTab === "traces"
-                ? "bg-accent/20 text-accent font-semibold"
+                ? "bg-bg-card text-accent shadow-sm"
                 : "text-text-muted hover:text-text"
             }`}
           >
-            Traces & Waterfalls
+            Traces & Execution Flow
           </button>
           <button
             onClick={() => setActiveTab("stats")}
-            className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+            className={`rounded-lg px-3.5 py-1.5 text-xs font-semibold transition-all ${
               activeTab === "stats"
-                ? "bg-accent/20 text-accent font-semibold"
+                ? "bg-bg-card text-accent shadow-sm"
                 : "text-text-muted hover:text-text"
             }`}
           >
@@ -63,9 +63,9 @@ export const Navbar: React.FC<NavbarProps> = ({
           </button>
           <button
             onClick={() => setActiveTab("bottlenecks")}
-            className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+            className={`rounded-lg px-3.5 py-1.5 text-xs font-semibold transition-all ${
               activeTab === "bottlenecks"
-                ? "bg-accent/20 text-accent font-semibold"
+                ? "bg-bg-card text-accent shadow-sm"
                 : "text-text-muted hover:text-text"
             }`}
           >
@@ -82,7 +82,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               value={autoRefreshInterval}
               onChange={(e) => setAutoRefreshInterval(Number(e.target.value))}
               aria-label="Auto refresh interval"
-              className="rounded border border-border bg-bg-card px-2 py-1 text-xs text-text focus:outline-none focus:ring-1 focus:ring-accent"
+              className="rounded-lg border border-border bg-bg-card px-2.5 py-1 text-xs text-text focus:outline-none focus:ring-1 focus:ring-accent"
             >
               <option value={0}>Manual</option>
               <option value={5000}>Auto (5s)</option>
@@ -95,9 +95,9 @@ export const Navbar: React.FC<NavbarProps> = ({
           <button
             onClick={onRefresh}
             disabled={isRefreshing}
-            className="flex items-center space-x-1.5 rounded-md border border-border bg-bg-card px-3 py-1.5 text-xs font-medium text-text transition-colors hover:bg-bg-subtle disabled:opacity-50"
+            className="flex items-center space-x-1.5 rounded-lg border border-border bg-bg-card px-3.5 py-1.5 text-xs font-semibold text-text shadow-sm hover:bg-bg-subtle hover:border-dark transition-all disabled:opacity-50"
           >
-            <RefreshCw className={`h-3.5 w-3.5 ${isRefreshing ? "animate-spin text-accent" : ""}`} />
+            <RefreshCw className={`h-3.5 w-3.5 ${isRefreshing ? "animate-spin text-accent" : "text-text-muted"}`} />
             <span>Refresh</span>
           </button>
         </div>
@@ -105,4 +105,3 @@ export const Navbar: React.FC<NavbarProps> = ({
     </header>
   );
 };
-

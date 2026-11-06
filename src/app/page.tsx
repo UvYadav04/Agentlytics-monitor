@@ -6,8 +6,8 @@ import { ComponentStats } from "@/components/ComponentStats";
 import { Navbar } from "@/components/Navbar";
 import { SpanDrawer } from "@/components/SpanDrawer";
 import { StatsCards } from "@/components/StatsCards";
+import { TraceAnalysisView } from "@/components/TraceAnalysisView";
 import { TracesTable } from "@/components/TracesTable";
-import { WaterfallView } from "@/components/WaterfallView";
 import {
   fetchComponentStats,
   fetchSlowestSpans,
@@ -128,7 +128,7 @@ export default function MonitoringDashboard() {
         {activeTab === "traces" && (
           <div className="space-y-6">
             {selectedTraceTree && (
-              <WaterfallView
+              <TraceAnalysisView
                 tree={selectedTraceTree}
                 selectedSpan={selectedSpan}
                 onSelectSpan={setSelectedSpan}
