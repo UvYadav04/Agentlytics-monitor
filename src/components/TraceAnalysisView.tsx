@@ -549,7 +549,16 @@ const StepItem: React.FC<StepItemProps> = ({
     const model = span.tags?.model || span.inputs?.model || "";
     stepDescription = `${provider.toUpperCase()} • ${model || "Default Model"}`;
 
-    if (stageNumber === 1 && stepIndex === 1) {
+    const toolCalls = Array.isArray(span.outputs?.tool_calls)
+      ? span.outputs.tool_calls
+      : Array.isArray(span.outputs?.content)
+      ? span.outputs.content.filter((c: any) => c && (c.__class__ === "FunctionCall" || c.name))
+      : [];
+
+    if (toolCalls.length > 0) {
+      const names = toolCalls.map((c: any) => c.name || "tool").join(", ");
+      stepTitle = `LLM Decision: Call ${names}`;
+    } else if (stageNumber === 1 && stepIndex === 1) {
       stepTitle = "Query Analysis & Intent Planning";
     } else if (span.step_name.includes("create")) {
       stepTitle = "Response Synthesis & Reasoning";
@@ -559,10 +568,74 @@ const StepItem: React.FC<StepItemProps> = ({
   // Extract previews from inputs / outputs
   let sqlPreview = "";
   if (span.inputs) {
-    if (span.inputs.query?.statement) sqlPreview = String(span.inputs.query.statement);
-    else if (span.inputs.query?.pipeline) sqlPreview = JSON.stringify(span.inputs.query.pipeline);
-    else if (span.inputs.statement) sqlPreview = String(span.inputs.statement);
-    else if (span.inputs.code) sqlPreview = String(span.inputs.code);
+    let rawQuery = span.inputs.query;
+    if (typeof rawQuery === "string") {
+      try {
+        rawQuery = JSON.parse(rawQuery);
+      } catch {}
+    }
+    if (typeof rawQuery === "object" && rawQuery !== null) {
+      if (rawQuery.statement) sqlPreview = String(rawQuery.statement);
+      else if (rawQuery.sql) sqlPreview = String(rawQuery.sql);
+      else if (rawQuery.pipeline) {
+        const col = rawQuery.collection ? `db.${rawQuery.collection}.aggregate(` : "";
+        sqlPreview = col ? `${col}${JSON.stringify(rawQuery.pipeline)})` : JSON.stringify(rawQuery.pipeline);
+      }
+    } else if (typeof rawQuery === "string") {
+      sqlPreview = rawQuery;
+    } else if (span.inputs.statement) {
+      sqlPreview = String(span.inputs.statement);
+    } else if (span.inputs.sql) {
+      sqlPreview = String(span.inputs.sql);
+    } else if (span.inputs.pipeline) {
+      sqlPreview = JSON.stringify(span.inputs.pipeline);
+    } else if (span.inputs.code) {
+      sqlPreview = String(span.inputs.code);
+    } else if (span.step_name === "inspect_database_schema") {
+      const target = span.inputs.table_or_collection || span.inputs.table || span.inputs.collection;
+      if (target) sqlPreview = `inspect: ${target}`;
+    }
+  }
+
+  // Fallback: If sqlPreview is still empty, check LLM tool calls in outputs
+  if (!sqlPreview && span.outputs) {
+    const calls = Array.isArray(span.outputs.tool_calls)
+      ? span.outputs.tool_calls
+      : Array.isArray(span.outputs.content)
+      ? span.outputs.content.filter((c: any) => c && (c.__class__ === "FunctionCall" || c.name))
+      : [];
+
+    for (const call of calls) {
+      let args = call.arguments;
+      if (typeof args === "string") {
+        try { args = JSON.parse(args); } catch {}
+      }
+      if (call.name === "execute_query" || call.name === "execute_database_query") {
+        let q = args?.query;
+        if (typeof q === "string") {
+          try { q = JSON.parse(q); } catch {}
+        }
+        if (typeof q === "object" && q !== null) {
+          if (q.statement || q.sql) sqlPreview = String(q.statement || q.sql);
+          else if (q.pipeline) {
+            const col = q.collection ? `db.${q.collection}.aggregate(` : "";
+            sqlPreview = col ? `${col}${JSON.stringify(q.pipeline)})` : JSON.stringify(q.pipeline);
+          }
+        } else if (typeof q === "string") {
+          sqlPreview = q;
+        }
+      } else if (call.name === "inspect_schema" || call.name === "inspect_database_schema") {
+        const target = args?.table_or_collection || args?.table || args?.collection;
+        if (target) sqlPreview = `inspect: ${target}`;
+      } else if (call.name === "propose_visualization" || call.name === "create_visualization") {
+        sqlPreview = `chart: ${args?.chart_type || "bar"} (${args?.title || "chart"})`;
+      } else if (call.name === "invoke_database_agent") {
+        sqlPreview = `db: ${args?.objective || "database analysis"}`;
+      } else if (call.name === "invoke_tabular_agent") {
+        sqlPreview = `tabular: ${args?.objective || "tabular analysis"}`;
+      }
+      if (sqlPreview) break;
+    }
   }
 
   const rowCount = span.metrics?.row_count ?? span.outputs?.output?.row_count;
@@ -776,7 +849,9 @@ function buildExecutionStages(tree: TraceTree, totalDurationMs: number): Executi
   const explicitSubAgents = children.filter(
     (c) =>
       c.step_type === "agent" ||
-      (c.component.startsWith("agent.") && c.component !== "agent.orchestrator")
+      (c.component.startsWith("agent.") && c.component !== "agent.orchestrator") ||
+      c.step_name.startsWith("invoke_") ||
+      c.component.includes("invoke_")
   );
 
   if (explicitSubAgents.length > 0) {

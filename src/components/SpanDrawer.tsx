@@ -8,6 +8,7 @@ import {
   BarChart3,
   Bot,
   Check,
+  CheckCircle,
   Clock,
   Coins,
   Copy,
@@ -77,12 +78,100 @@ export const SpanDrawer: React.FC<SpanDrawerProps> = ({ span, onClose }) => {
     span.step_name.includes("visualization") ||
     span.step_name.includes("chart");
 
-  // Extract DB specifics
+  // Extract LLM Tool Calls if present in outputs
+  const llmToolCalls: any[] = [];
+  if (Array.isArray(span.outputs?.tool_calls)) {
+    llmToolCalls.push(...span.outputs.tool_calls);
+  } else if (Array.isArray(span.outputs?.content)) {
+    for (const item of span.outputs.content) {
+      if (item && (item.__class__ === "FunctionCall" || item.name || item.arguments)) {
+        llmToolCalls.push(item);
+      }
+    }
+  }
+
+  // Extract DB specifics from inputs or generated tool calls
+  let rawQuery = span.inputs?.query;
+  if (typeof rawQuery === "string") {
+    try {
+      rawQuery = JSON.parse(rawQuery);
+    } catch {
+      // plain text sql
+    }
+  }
+
+  let toolCallQuery = "";
+  let toolCallCollection = "";
+  let toolCallPipeline: any = null;
+  let toolCallSchemaTarget = "";
+
+  for (const call of llmToolCalls) {
+    let args = call.arguments;
+    if (typeof args === "string") {
+      try { args = JSON.parse(args); } catch {}
+    }
+    if (call.name === "execute_query" || call.name === "execute_database_query") {
+      let q = args?.query;
+      if (typeof q === "string") {
+        try { q = JSON.parse(q); } catch {}
+      }
+      if (typeof q === "object" && q !== null) {
+        if (q.statement || q.sql) toolCallQuery = String(q.statement || q.sql);
+        if (q.pipeline) toolCallPipeline = q.pipeline;
+        if (q.collection) toolCallCollection = String(q.collection);
+      } else if (typeof q === "string") {
+        toolCallQuery = q;
+      }
+    } else if (call.name === "inspect_schema" || call.name === "inspect_database_schema") {
+      toolCallSchemaTarget = args?.table_or_collection || args?.table || args?.collection || "";
+    }
+  }
+
   const sqlStatement =
-    span.inputs?.query?.statement ||
-    (typeof span.inputs?.query === "string" ? span.inputs.query : null) ||
-    span.inputs?.statement;
-  const mongoPipeline = span.inputs?.query?.pipeline || span.inputs?.pipeline;
+    (typeof rawQuery === "object" && rawQuery !== null ? (rawQuery.statement || rawQuery.sql) : null) ||
+    (typeof rawQuery === "string" ? rawQuery : null) ||
+    span.inputs?.statement ||
+    span.inputs?.sql ||
+    (toolCallQuery || null);
+
+  const mongoPipeline =
+    (typeof rawQuery === "object" && rawQuery !== null ? rawQuery.pipeline : null) ||
+    span.inputs?.pipeline ||
+    (Array.isArray(rawQuery) ? rawQuery : null) ||
+    toolCallPipeline;
+
+  const mongoCollection =
+    (typeof rawQuery === "object" && rawQuery !== null ? rawQuery.collection : null) ||
+    span.inputs?.collection ||
+    (toolCallCollection || null);
+
+  const schemaTarget =
+    span.inputs?.table_or_collection ||
+    span.inputs?.table ||
+    span.inputs?.collection ||
+    (toolCallSchemaTarget || null);
+
+  const schemaFields: any[] =
+    Array.isArray(span.outputs?.output?.fields)
+      ? span.outputs.output.fields
+      : Array.isArray(span.outputs?.fields)
+      ? span.outputs.fields
+      : [];
+
+  const schemaCollections: any[] =
+    Array.isArray(span.outputs?.output?.collections)
+      ? span.outputs.output.collections
+      : Array.isArray(span.outputs?.collections)
+      ? span.outputs.collections
+      : [];
+
+  const schemaTables: any[] =
+    Array.isArray(span.outputs?.output?.tables)
+      ? span.outputs.output.tables
+      : Array.isArray(span.outputs?.tables)
+      ? span.outputs.tables
+      : [];
+
   const queryRows: any[] =
     span.outputs?.output?.rows ||
     span.outputs?.rows ||
@@ -249,6 +338,18 @@ export const SpanDrawer: React.FC<SpanDrawerProps> = ({ span, onClose }) => {
                 </button>
               </div>
 
+              {/* Target Schema/Table Display */}
+              {schemaTarget && (
+                <div className="space-y-1.5">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-cyan-700 block">
+                    Inspecting Target Schema / Collection
+                  </span>
+                  <div className="rounded-lg bg-bg-subtle border border-border p-2.5 font-mono text-xs font-semibold text-accent">
+                    {schemaTarget}
+                  </div>
+                </div>
+              )}
+
               {/* SQL Statement Display */}
               {sqlStatement && (
                 <div className="space-y-1.5">
@@ -264,9 +365,16 @@ export const SpanDrawer: React.FC<SpanDrawerProps> = ({ span, onClose }) => {
               {/* MongoDB Pipeline Display */}
               {mongoPipeline && (
                 <div className="space-y-1.5">
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-700 block">
-                    MongoDB Aggregation Pipeline
-                  </span>
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-700 block">
+                      MongoDB Aggregation Pipeline
+                    </span>
+                    {mongoCollection && (
+                      <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-emerald-50 text-emerald-800 border border-emerald-200">
+                        Collection: {mongoCollection}
+                      </span>
+                    )}
+                  </div>
                   <div className="rounded-lg bg-slate-900 text-slate-100 p-3 font-mono text-xs overflow-x-auto whitespace-pre-wrap">
                     <code>{JSON.stringify(mongoPipeline, null, 2)}</code>
                   </div>
@@ -420,8 +528,133 @@ export const SpanDrawer: React.FC<SpanDrawerProps> = ({ span, onClose }) => {
                 </div>
               )}
 
+              {/* Inspected Schema Fields Table */}
+              {schemaFields.length > 0 && (
+                <div className="space-y-2">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-cyan-700 flex items-center gap-1">
+                    <Table className="h-3 w-3" />
+                    Inspected Fields ({schemaFields.length} fields)
+                  </span>
+                  <div className="overflow-x-auto rounded-lg border border-border max-h-60">
+                    <table className="w-full text-left font-mono text-[11px]">
+                      <thead className="bg-bg-subtle border-b border-border text-text-muted font-semibold sticky top-0">
+                        <tr>
+                          <th className="p-2">Field Name</th>
+                          <th className="p-2">Data Type</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-border/60">
+                        {schemaFields.map((f: any, fIdx: number) => (
+                          <tr key={fIdx} className="hover:bg-bg-subtle/50">
+                            <td className="p-2 font-medium text-text">{f.name}</td>
+                            <td className="p-2 text-text-muted">{f.type || "unknown"}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {/* Discovered Collections / Tables Overview */}
+              {(schemaCollections.length > 0 || schemaTables.length > 0) && (
+                <div className="space-y-2">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-cyan-700 flex items-center gap-1">
+                    <Table className="h-3 w-3" />
+                    Discovered Schema Overview ({(schemaCollections.length || schemaTables.length)} entities)
+                  </span>
+                  <div className="overflow-x-auto rounded-lg border border-border max-h-60">
+                    <table className="w-full text-left font-mono text-[11px]">
+                      <thead className="bg-bg-subtle border-b border-border text-text-muted font-semibold sticky top-0">
+                        <tr>
+                          <th className="p-2">Name</th>
+                          <th className="p-2">Row Count</th>
+                          <th className="p-2">Key Columns / Fields</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-border/60">
+                        {(schemaCollections.length > 0 ? schemaCollections : schemaTables).map((item: any, iIdx: number) => (
+                          <tr key={iIdx} className="hover:bg-bg-subtle/50">
+                            <td className="p-2 font-medium text-text">{item.name || item.table}</td>
+                            <td className="p-2 text-accent">{item.row_count !== undefined && item.row_count !== null ? item.row_count : "—"}</td>
+                            <td className="p-2 text-text-muted truncate max-w-[200px]">
+                              {Array.isArray(item.key_fields || item.key_columns)
+                                ? (item.key_fields || item.key_columns).slice(0, 5).join(", ")
+                                : "—"}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {/* Empty query result badge */}
+              {span.step_name === "execute_database_query" && (!queryRows || queryRows.length === 0) && (
+                <div className="rounded-lg bg-emerald-50 border border-emerald-200 p-3 text-emerald-800 text-xs">
+                  <div className="font-semibold flex items-center gap-1.5">
+                    <CheckCircle className="h-4 w-4 text-emerald-600" />
+                    Database query executed successfully (0 rows returned)
+                  </div>
+                  {dbExecutionTime !== undefined && (
+                    <div className="text-[11px] text-emerald-700 mt-1">
+                      Execution time: {formatDuration(dbExecutionTime)}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* LLM Generated Tool Calls / Actions */}
+              {llmToolCalls.length > 0 && (
+                <div className="space-y-2">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-purple-700 flex items-center gap-1">
+                    <Wrench className="h-3 w-3" />
+                    Generated Tool Calls & Actions ({llmToolCalls.length})
+                  </span>
+                  <div className="space-y-2.5">
+                    {llmToolCalls.map((tc: any, tcIdx: number) => {
+                      let argsObj: any = tc.arguments;
+                      if (typeof argsObj === "string") {
+                        try { argsObj = JSON.parse(argsObj); } catch {}
+                      }
+                      return (
+                        <div key={tcIdx} className="rounded-lg border border-purple-200 bg-purple-50/50 p-3 space-y-2 font-mono text-xs">
+                          <div className="flex items-center justify-between">
+                            <span className="font-bold text-purple-900 flex items-center gap-1.5">
+                              <span className="h-2 w-2 rounded-full bg-purple-500" />
+                              {tc.name || "ToolCall"}
+                            </span>
+                            {argsObj?.connection_id && (
+                              <span className="text-[10px] text-purple-700 bg-purple-100 px-1.5 py-0.5 rounded">
+                                conn: {String(argsObj.connection_id).slice(0, 10)}...
+                              </span>
+                            )}
+                          </div>
+                          {argsObj && (
+                            <div className="space-y-1">
+                              <span className="text-[10px] uppercase font-bold text-purple-800/70">Arguments:</span>
+                              <pre className="text-[11px] text-slate-800 bg-white p-2.5 rounded border border-purple-100 overflow-x-auto whitespace-pre-wrap max-h-56">
+                                {typeof argsObj === "object" ? JSON.stringify(argsObj, null, 2) : String(argsObj)}
+                              </pre>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
               {/* Fallback General Output Display */}
-              {(!queryRows || queryRows.length === 0) && !sandboxStdout && !chartSpec && (
+              {(!queryRows || queryRows.length === 0) &&
+                schemaFields.length === 0 &&
+                schemaCollections.length === 0 &&
+                schemaTables.length === 0 &&
+                llmToolCalls.length === 0 &&
+                !sandboxStdout &&
+                !chartSpec &&
+                span.step_name !== "execute_database_query" && (
                 <pre className="rounded-lg border border-border bg-bg-subtle p-3 font-mono text-[11px] text-text max-h-60 overflow-y-auto whitespace-pre-wrap">
                   {outputText || "No output generated or step currently in progress."}
                 </pre>
