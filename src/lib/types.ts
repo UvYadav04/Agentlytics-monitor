@@ -16,6 +16,8 @@ export interface SpanError {
   type: string;
   message: string;
   traceback?: string;
+  code?: string | number;
+  details?: Record<string, any>;
 }
 
 export interface SpanRecord {
@@ -53,6 +55,15 @@ export interface TraceSummary {
   total_completion_tokens: number;
   total_tokens: number;
   created_at: string;
+  // Dashboard & observability fields
+  intent?: string;
+  status?: "OK" | "Timeout" | "Error" | "success" | "error" | "running";
+  latency_s?: number;
+  cost_usd?: number;
+  query?: string;
+  user_id?: string;
+  route?: string;
+  time_display?: string;
 }
 
 export interface TraceTree {
@@ -76,3 +87,51 @@ export interface ComponentStat {
   total_completion_tokens: number;
 }
 
+export interface ServiceHealthItem {
+  id: string;
+  name: string;
+  p95_ms: number;
+  status: "healthy" | "latency_watch" | "degraded" | "down";
+}
+
+export interface TrafficPoint {
+  time: string;
+  requestsPerSec: number;
+}
+
+export interface LatencyPoint {
+  time: string;
+  p50: number;
+  p95: number;
+  slo: number;
+}
+
+export interface DashboardTelemetry {
+  metrics: {
+    totalRequests: number;
+    requestsChangePct: number;
+    requestRate: number;
+    peakRequestRate: number;
+    p95LatencySec: number;
+    targetLatencySec: number;
+    errorRatePct: number;
+    failedRequestsCount: number;
+    totalTokens: number;
+    inputTokens: number;
+    outputTokens: number;
+    llmSpendUsd: number;
+  };
+  trafficSeries: TrafficPoint[];
+  latencySeries: LatencyPoint[];
+  services: ServiceHealthItem[];
+  alertBanner?: {
+    message: string;
+    level: "warning" | "error" | "info";
+  } | null;
+  retrievalQuality: {
+    noResultRatePct: number;
+    topK: number;
+    p95RetrievalMs: number;
+  };
+  recentTraces: TraceSummary[];
+}

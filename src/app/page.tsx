@@ -1,66 +1,41 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { BottlenecksTable } from "@/components/BottlenecksTable";
-import { ComponentStats } from "@/components/ComponentStats";
-import { Navbar } from "@/components/Navbar";
-import { SpanDrawer } from "@/components/SpanDrawer";
+import { LatencyChart } from "@/components/LatencyChart";
+import { RecentTracesTable } from "@/components/RecentTracesTable";
+import { RequestTrafficChart } from "@/components/RequestTrafficChart";
+import { ServiceHealthCard } from "@/components/ServiceHealthCard";
+import { Sidebar } from "@/components/Sidebar";
 import { StatsCards } from "@/components/StatsCards";
-import { TraceAnalysisView } from "@/components/TraceAnalysisView";
-import { TracesTable } from "@/components/TracesTable";
-import {
-  fetchComponentStats,
-  fetchSlowestSpans,
-  fetchTraces,
-  fetchTraceTree,
-} from "@/lib/api";
-import type { ComponentStat, SpanRecord, TraceSummary, TraceTree } from "@/lib/types";
+import { TopHeader } from "@/components/TopHeader";
+import { TraceInspectorModal } from "@/components/TraceInspectorModal";
+import { fetchTraces, fetchTraceTree } from "@/lib/api";
+import { mockDashboardData } from "@/lib/mockTelemetry";
+import type { TraceSummary, TraceTree } from "@/lib/types";
 
 export default function MonitoringDashboard() {
-  const [activeTab, setActiveTab] = useState<"traces" | "stats" | "bottlenecks">("traces");
-  const [autoRefreshInterval, setAutoRefreshInterval] = useState<number>(15000);
+  const [activeNav, setActiveNav] = useState<string>("overview");
+  const [timeRange, setTimeRange] = useState<string>("Last 60 minutes");
+  const [refreshInterval, setRefreshInterval] = useState<number>(30000);
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [lastUpdatedText, setLastUpdatedText] = useState<string>("Updated just now");
 
-  const [traces, setTraces] = useState<TraceSummary[]>([]);
-  const [stats, setStats] = useState<ComponentStat[]>([]);
-  const [slowestSpans, setSlowestSpans] = useState<SpanRecord[]>([]);
-
-  const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null);
+  const [traces, setTraces] = useState<TraceSummary[]>(mockDashboardData.recentTraces);
   const [selectedTraceTree, setSelectedTraceTree] = useState<TraceTree | null>(null);
-  const [selectedSpan, setSelectedSpan] = useState<SpanRecord | null>(null);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState<boolean>(false);
 
+  // Load telemetry traces
   const loadData = async () => {
     setIsRefreshing(true);
     try {
-      const [tracesData, statsData, slowestData] = await Promise.allSettled([
-        fetchTraces(100, 0),
-        fetchComponentStats(24),
-        fetchSlowestSpans(25),
-      ]);
-
-      if (tracesData.status === "fulfilled") {
-        setTraces(tracesData.value);
-        setErrorMessage(null);
-      } else {
-        const msg = (tracesData.reason as Error)?.message || "Failed to load traces";
-        setErrorMessage(msg);
+      const data = await fetchTraces(50, 0);
+      if (data && data.length > 0) {
+        setTraces(data);
       }
-
-      if (statsData.status === "fulfilled") setStats(statsData.value);
-      if (slowestData.status === "fulfilled") setSlowestSpans(slowestData.value);
-
-      // If a trace is currently open, refresh its tree as well
-      if (selectedTraceId) {
-        try {
-          const tree = await fetchTraceTree(selectedTraceId);
-          setSelectedTraceTree(tree);
-        } catch {}
-      }
-    } catch (err: any) {
-      console.error("Failed to load monitoring data:", err);
-      setErrorMessage(err?.message || "An unexpected error occurred while loading monitoring data.");
+      setLastUpdatedText("Updated just now");
+    } catch (err) {
+      console.warn("Could not fetch remote traces, using synthetic telemetry:", err);
     } finally {
       setIsRefreshing(false);
       setIsLoading(false);
@@ -71,18 +46,18 @@ export default function MonitoringDashboard() {
     loadData();
   }, []);
 
-  // Handle auto-refresh interval
+  // Auto-refresh interval
   useEffect(() => {
-    if (autoRefreshInterval <= 0) return;
-    const interval = setInterval(() => {
+    if (refreshInterval <= 0) return;
+    const timer = setInterval(() => {
       loadData();
-    }, autoRefreshInterval);
-    return () => clearInterval(interval);
-  }, [autoRefreshInterval, selectedTraceId]);
+    }, refreshInterval);
+    return () => clearInterval(timer);
+  }, [refreshInterval]);
 
+  // Handle trace inspection click
   const handleSelectTrace = async (traceId: string) => {
     setSelectedTraceId(traceId);
-    setActiveTab("traces");
     try {
       const tree = await fetchTraceTree(traceId);
       setSelectedTraceTree(tree);
@@ -92,75 +67,78 @@ export default function MonitoringDashboard() {
   };
 
   return (
-    <div className="min-h-screen bg-bg">
-      <Navbar
-        activeTab={activeTab}
-        setActiveTab={setActiveTab}
-        autoRefreshInterval={autoRefreshInterval}
-        setAutoRefreshInterval={setAutoRefreshInterval}
-        onRefresh={loadData}
-        isRefreshing={isRefreshing}
-      />
+    <div className="min-h-screen bg-[#070C19] text-slate-100 flex">
+      {/* 1. Left Sidebar */}
+      <Sidebar activeNav={activeNav} onSelectNav={setActiveNav} />
 
-      <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 space-y-6">
-        {/* Error / Auth Notice Banner */}
-        {errorMessage && (
-          <div className="flex items-center justify-between rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-xs text-red-600 dark:text-red-400 shadow-sm">
-            <div className="flex items-center space-x-2">
-              <span className="font-semibold">Notice:</span>
-              <span>{errorMessage}</span>
-            </div>
-            {errorMessage.includes("401") && (
-              <a
-                href="/login"
-                className="ml-4 rounded-md bg-accent px-3 py-1 font-medium text-white transition hover:opacity-90"
-              >
-                Log In
-              </a>
-            )}
+      {/* 2. Main Dashboard Area (offset by sidebar width: 240px / 15rem) */}
+      <div className="flex-1 pl-60 flex flex-col min-w-0">
+        {/* Top Header */}
+        <TopHeader
+          timeRange={timeRange}
+          setTimeRange={setTimeRange}
+          refreshInterval={refreshInterval}
+          setRefreshInterval={setRefreshInterval}
+          onRefresh={loadData}
+          isRefreshing={isRefreshing}
+          lastUpdatedText={lastUpdatedText}
+        />
+
+        {/* Dashboard Content Container */}
+        <main className="p-6 space-y-6 flex-1">
+          {/* Page Heading & Subtitle */}
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight text-white font-sans">
+              Chatbot observability
+            </h1>
+            <p className="text-xs text-slate-400 mt-1">
+              Requests, model performance, retrieval and dependencies
+            </p>
           </div>
-        )}
 
-        {/* KPI Cards Overview */}
-        <StatsCards traces={traces} />
+          {/* Row 1: 6 Top KPI Metric Cards with Sparklines */}
+          <StatsCards traces={traces} customMetrics={mockDashboardData.metrics} />
 
-        {/* Tab 1: Traces & Waterfall View */}
-        {activeTab === "traces" && (
-          <div className="space-y-6">
-            {selectedTraceTree && (
-              <TraceAnalysisView
-                tree={selectedTraceTree}
-                selectedSpan={selectedSpan}
-                onSelectSpan={setSelectedSpan}
-                onClose={() => {
-                  setSelectedTraceTree(null);
-                  setSelectedTraceId(null);
-                  setSelectedSpan(null);
-                }}
+          {/* Row 2: 2 Side-by-Side Charts (Request Traffic & End-to-End Latency) */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <RequestTrafficChart data={mockDashboardData.trafficSeries} />
+            <LatencyChart data={mockDashboardData.latencySeries} />
+          </div>
+
+          {/* Row 3: Split Layout (Left: Service Health & Retrieval Quality | Right: Recent Request Traces) */}
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
+            {/* Left Column (Service Health + Retrieval Quality) */}
+            <div className="lg:col-span-5">
+              <ServiceHealthCard
+                services={mockDashboardData.services}
+                alertBanner={mockDashboardData.alertBanner}
+                retrievalQuality={mockDashboardData.retrievalQuality}
               />
-            )}
+            </div>
 
-            <TracesTable
-              traces={traces}
-              selectedTraceId={selectedTraceId}
-              onSelectTrace={handleSelectTrace}
-              isLoading={isLoading}
-            />
+            {/* Right Column (Recent Request Traces Table) */}
+            <div className="lg:col-span-7">
+              <RecentTracesTable
+                traces={traces}
+                selectedTraceId={selectedTraceId}
+                onSelectTrace={handleSelectTrace}
+                isLoading={isLoading}
+              />
+            </div>
           </div>
-        )}
+        </main>
+      </div>
 
-        {/* Tab 2: Component Latency Aggregation */}
-        {activeTab === "stats" && <ComponentStats stats={stats} />}
-
-        {/* Tab 3: Performance Bottlenecks */}
-        {activeTab === "bottlenecks" && (
-          <BottlenecksTable slowestSpans={slowestSpans} onSelectTrace={handleSelectTrace} />
-        )}
-      </main>
-
-      {/* Slide-over Span Details Drawer */}
-      <SpanDrawer span={selectedSpan} onClose={() => setSelectedSpan(null)} />
+      {/* 3. Deep Trace Inspector Modal (Shows every agent, tool, input, output, failure, and latency) */}
+      {selectedTraceTree && (
+        <TraceInspectorModal
+          tree={selectedTraceTree}
+          onClose={() => {
+            setSelectedTraceTree(null);
+            setSelectedTraceId(null);
+          }}
+        />
+      )}
     </div>
   );
 }
-
