@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { realTelemetryData } from "@/lib/realTelemetry";
+import { emptyTelemetryData } from "@/lib/emptyTelemetry";
 import { queryDashboardOverviewFromDb } from "@/lib/sqliteTraces";
 
 export const dynamic = "force-dynamic";
@@ -8,7 +8,7 @@ export async function GET() {
   try {
     // 1. First priority: Read directly from mounted volume /app/traces/traces.db
     const dbData = queryDashboardOverviewFromDb();
-    if (dbData && dbData.metrics && dbData.metrics.totalTraces > 0) {
+    if (dbData && dbData.metrics) {
       return NextResponse.json(dbData);
     }
 
@@ -24,7 +24,7 @@ export async function GET() {
       clearTimeout(timeoutId);
       if (res.ok) {
         const json = await res.json();
-        if (json && json.metrics && json.metrics.totalTraces > 0) {
+        if (json && json.metrics) {
           return NextResponse.json(json);
         }
       }
@@ -32,10 +32,10 @@ export async function GET() {
       // Backend API not reachable
     }
 
-    // 3. Fallback: Genuine pre-exported real telemetry from traces.db
-    return NextResponse.json(realTelemetryData);
+    // 3. Fallback: Clean empty state with 0 traces
+    return NextResponse.json(emptyTelemetryData);
   } catch (err: any) {
-    return NextResponse.json(realTelemetryData, { status: 200 });
+    return NextResponse.json(emptyTelemetryData, { status: 200 });
   }
 }
 

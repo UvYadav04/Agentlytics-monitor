@@ -8,25 +8,25 @@ interface StatsCardsProps {
 }
 
 export const StatsCards: React.FC<StatsCardsProps> = ({ metrics }) => {
-  const totalTraces = metrics?.totalTraces ?? 1137;
-  const totalSpans = metrics?.totalSpans ?? 3312;
-  const p50LatencySec = metrics?.p50LatencySec ?? 3.58;
-  const p95LatencySec = metrics?.p95LatencySec ?? 31.64;
-  const avgLatencySec = metrics?.avgLatencySec ?? 15.01;
-  const errorRatePct = metrics?.errorRatePct ?? 4.05;
-  const failedTracesCount = metrics?.failedTracesCount ?? 46;
-  const totalTokens = metrics?.totalTokens ?? 5389577;
-  const inputTokens = metrics?.inputTokens ?? 5115744;
-  const outputTokens = metrics?.outputTokens ?? 273833;
-  const llmCallsCount = metrics?.llmCallsCount ?? 1567;
-  const databaseCallsCount = metrics?.databaseCallsCount ?? 740;
+  const totalTraces = metrics?.totalTraces ?? 0;
+  const totalSpans = metrics?.totalSpans ?? 0;
+  const p50LatencySec = metrics?.p50LatencySec ?? 0;
+  const p95LatencySec = metrics?.p95LatencySec ?? 0;
+  const avgLatencySec = metrics?.avgLatencySec ?? 0;
+  const errorRatePct = metrics?.errorRatePct ?? 0;
+  const failedTracesCount = metrics?.failedTracesCount ?? 0;
+  const totalTokens = metrics?.totalTokens ?? 0;
+  const inputTokens = metrics?.inputTokens ?? 0;
+  const outputTokens = metrics?.outputTokens ?? 0;
+  const llmCallsCount = metrics?.llmCallsCount ?? 0;
+  const databaseCallsCount = metrics?.databaseCallsCount ?? 0;
 
   const cards = [
     {
       title: "Investigations",
       value: totalTraces.toLocaleString(),
       subtext: `${totalSpans.toLocaleString()} total spans traced`,
-      subtextColor: "text-cyan-400",
+      subtextColor: totalTraces > 0 ? "text-cyan-400" : "text-slate-500",
     },
     {
       title: "p95 Latency",
@@ -38,7 +38,7 @@ export const StatsCards: React.FC<StatsCardsProps> = ({ metrics }) => {
       title: "Error Rate",
       value: `${errorRatePct.toFixed(2)}%`,
       subtext: `${failedTracesCount} failed investigations`,
-      subtextColor: errorRatePct > 5 ? "text-amber-400" : "text-emerald-400",
+      subtextColor: errorRatePct > 5 ? "text-amber-400" : errorRatePct > 0 ? "text-emerald-400" : "text-slate-500",
     },
     {
       title: "Tokens",
@@ -49,14 +49,14 @@ export const StatsCards: React.FC<StatsCardsProps> = ({ metrics }) => {
     {
       title: "LLM Invocations",
       value: llmCallsCount.toLocaleString(),
-      subtext: "DeepInfra & Groq calls",
-      subtextColor: "text-indigo-400",
+      subtext: llmCallsCount > 0 ? "DeepInfra & Groq calls" : "0 LLM calls",
+      subtextColor: llmCallsCount > 0 ? "text-indigo-400" : "text-slate-500",
     },
     {
       title: "Database Queries",
       value: databaseCallsCount.toLocaleString(),
-      subtext: "PostgreSQL & DuckDB",
-      subtextColor: "text-cyan-400",
+      subtext: databaseCallsCount > 0 ? "PostgreSQL & DuckDB" : "0 database calls",
+      subtextColor: databaseCallsCount > 0 ? "text-cyan-400" : "text-slate-500",
     },
   ];
 

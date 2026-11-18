@@ -23,7 +23,6 @@ import {
 import { MarkdownViewer } from "@/components/MarkdownViewer";
 import { formatDuration, formatTokens, getStepTypeBadgeColor } from "@/lib/formatters";
 import { formatPayloadToMarkdown } from "@/lib/markdownFormatter";
-import { realTelemetryData } from "@/lib/realTelemetry";
 import type { SpanRecord, TraceTree } from "@/lib/types";
 
 interface TraceInspectorModalProps {
@@ -89,11 +88,9 @@ export const TraceInspectorModal: React.FC<TraceInspectorModalProps> = ({ tree, 
     if (s.inputs?.user_id && !userId) userId = String(s.inputs.user_id);
   }
 
+// Query fallback
   if (!queryText) {
-    const matched = realTelemetryData.recentTraces.find((t) => t.trace_id === tree.trace_id);
-    if (matched?.query) {
-      queryText = matched.query;
-    }
+    queryText = "Execution of data investigation pipeline";
   }
 
   const totalTokens = sortedSpans.reduce((acc, s) => acc + (s.total_tokens || 0), 0);

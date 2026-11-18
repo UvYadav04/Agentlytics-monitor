@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import { realTelemetryData } from "@/lib/realTelemetry";
 import { queryTracesListFromDb } from "@/lib/sqliteTraces";
 
 export const dynamic = "force-dynamic";
@@ -13,7 +12,7 @@ export async function GET(request: NextRequest) {
 
     // 1. Direct from bound volume /app/traces/traces.db
     const tracesFromDb = queryTracesListFromDb(limit, offset, status);
-    if (tracesFromDb && tracesFromDb.length > 0) {
+    if (tracesFromDb !== null) {
       return NextResponse.json({
         limit,
         offset,
@@ -40,26 +39,19 @@ export async function GET(request: NextRequest) {
       // Backend offline
     }
 
-    // 3. Fallback to exported traces
-    const filtered = status
-      ? realTelemetryData.recentTraces.filter((t) =>
-          status.toLowerCase() === "error" ? t.status === "Error" : t.status !== "Error"
-        )
-      : realTelemetryData.recentTraces;
-
-    const slice = filtered.slice(offset, offset + limit);
+    // 3. Fallback: Clean empty trace list
     return NextResponse.json({
       limit,
       offset,
-      count: slice.length,
-      traces: slice,
+      count: 0,
+      traces: [],
     });
   } catch {
     return NextResponse.json({
       limit: 50,
       offset: 0,
-      count: realTelemetryData.recentTraces.length,
-      traces: realTelemetryData.recentTraces,
+      count: 0,
+      traces: [],
     });
   }
 }

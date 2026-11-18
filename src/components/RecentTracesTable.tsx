@@ -121,7 +121,9 @@ export const RecentTracesTable: React.FC<RecentTracesTableProps> = ({
             ) : filtered.length === 0 ? (
               <tr>
                 <td colSpan={6} className="py-8 text-center text-slate-500">
-                  No request traces found matching filter.
+                  {traces.length === 0
+                    ? "No investigation traces recorded yet. Traces will appear here once requests run through Quarry Engine."
+                    : "No request traces found matching filter."}
                 </td>
               </tr>
             ) : (

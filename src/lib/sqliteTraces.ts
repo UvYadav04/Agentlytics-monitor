@@ -128,7 +128,26 @@ export function queryDashboardOverviewFromDb(): DashboardTelemetry | null {
     const totalTraces = traceRows.length;
     if (totalTraces === 0) {
       db.close();
-      return null;
+      return {
+        metrics: {
+          totalTraces: 0,
+          totalSpans: 0,
+          p50LatencySec: 0,
+          p95LatencySec: 0,
+          avgLatencySec: 0,
+          errorRatePct: 0,
+          failedTracesCount: 0,
+          totalTokens: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          llmCallsCount: 0,
+          databaseCallsCount: 0,
+        },
+        timeline: [],
+        componentStats: [],
+        slowestSpans: [],
+        recentTraces: [],
+      };
     }
 
     const durations: number[] = [];

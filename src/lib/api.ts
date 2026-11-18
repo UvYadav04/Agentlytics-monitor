@@ -1,4 +1,4 @@
-import { realTelemetryData, realTraceTrees } from "./realTelemetry";
+import { emptyTelemetryData } from "./emptyTelemetry";
 import type { ComponentStat, DashboardTelemetry, SpanRecord, TraceSummary, TraceTree } from "./types";
 
 const BASE_PATH = (process.env.NEXT_PUBLIC_BASE_PATH ?? "/monitoring").replace(/\/$/, "");
@@ -20,13 +20,13 @@ export async function fetchDashboardOverview(): Promise<DashboardTelemetry> {
 
     if (res.ok) {
       const data = await res.json();
-      if (data && data.metrics && data.metrics.totalTraces > 0) {
+      if (data && data.metrics) {
         return {
           metrics: data.metrics,
-          timeline: data.timeline || realTelemetryData.timeline,
-          componentStats: data.componentStats || realTelemetryData.componentStats,
-          recentTraces: data.recentTraces || realTelemetryData.recentTraces,
-          slowestSpans: data.slowestSpans || realTelemetryData.slowestSpans,
+          timeline: data.timeline || [],
+          componentStats: data.componentStats || [],
+          recentTraces: data.recentTraces || [],
+          slowestSpans: data.slowestSpans || [],
         };
       }
     }
@@ -46,20 +46,20 @@ export async function fetchDashboardOverview(): Promise<DashboardTelemetry> {
 
     if (res.ok) {
       const data = await res.json();
-      if (data && data.metrics && data.metrics.totalTraces > 0) {
+      if (data && data.metrics) {
         return {
           metrics: data.metrics,
-          timeline: data.timeline || realTelemetryData.timeline,
-          componentStats: data.componentStats || realTelemetryData.componentStats,
-          recentTraces: data.recentTraces || realTelemetryData.recentTraces,
-          slowestSpans: data.slowestSpans || realTelemetryData.slowestSpans,
+          timeline: data.timeline || [],
+          componentStats: data.componentStats || [],
+          recentTraces: data.recentTraces || [],
+          slowestSpans: data.slowestSpans || [],
         };
       }
     }
   } catch {}
 
-  // 3. Fallback to exported telemetry
-  return realTelemetryData;
+  // 3. Fallback to clean empty telemetry (0 traces)
+  return emptyTelemetryData;
 }
 
 export async function fetchTraces(limit: number = 50, offset: number = 0, status?: string): Promise<TraceSummary[]> {
@@ -80,9 +80,8 @@ export async function fetchTraces(limit: number = 50, offset: number = 0, status
 
     if (res.ok) {
       const data = await res.json();
-      const realTraces: TraceSummary[] = data.traces || [];
-      if (realTraces.length > 0) {
-        return realTraces;
+      if (data && Array.isArray(data.traces)) {
+        return data.traces;
       }
     }
   } catch {}
@@ -101,22 +100,16 @@ export async function fetchTraces(limit: number = 50, offset: number = 0, status
 
     if (res.ok) {
       const data = await res.json();
-      const realTraces: TraceSummary[] = data.traces || [];
-      if (realTraces.length > 0) {
-        return realTraces;
+      if (data && Array.isArray(data.traces)) {
+        return data.traces;
       }
     }
   } catch {}
 
-  return realTelemetryData.recentTraces.slice(offset, offset + limit);
+  return [];
 }
 
 export async function fetchTraceTree(traceId: string): Promise<TraceTree> {
-  // Check if we have the real tree in pre-exported realTraceTrees
-  if (realTraceTrees[traceId] && realTraceTrees[traceId].spans.length > 0) {
-    return realTraceTrees[traceId];
-  }
-
   // 1. Try Next.js internal route (direct DB)
   try {
     const controller = new AbortController();
@@ -157,35 +150,12 @@ export async function fetchTraceTree(traceId: string): Promise<TraceTree> {
     }
   } catch {}
 
-  // Fallback to finding trace in recent traces
-  const trace = realTelemetryData.recentTraces.find((t) => t.trace_id === traceId);
-  const now = trace?.start_time || Date.now() / 1000;
-  const duration = trace?.total_duration_ms || 2400;
-
-  const fallbackSpan: SpanRecord = {
-    span_id: `spn_root_${traceId.slice(-6)}`,
-    trace_id: traceId,
-    parent_span_id: null,
-    step_name: trace?.intent || "Data Investigation",
-    component: trace?.route || "agent.orchestrator",
-    step_type: "agent",
-    status: trace?.status === "Error" ? "error" : "success",
-    start_time: now,
-    end_time: now + duration / 1000,
-    duration_ms: duration,
-    prompt_tokens: trace?.total_prompt_tokens || 0,
-    completion_tokens: trace?.total_completion_tokens || 0,
-    total_tokens: trace?.total_tokens || 0,
-    inputs: { objective: trace?.query || "Execution of data pipeline" },
-    outputs: { result: "Completed trace investigation from records" },
-    created_at: trace?.created_at || new Date().toISOString(),
-  };
-
+  // Fallback if not found
   return {
     trace_id: traceId,
-    total_spans: 1,
-    roots: [fallbackSpan],
-    spans: [fallbackSpan],
+    total_spans: 0,
+    roots: [],
+    spans: [],
   };
 }
 
@@ -203,13 +173,13 @@ export async function fetchComponentStats(sinceHours: number = 720): Promise<Com
 
     if (res.ok) {
       const data = await res.json();
-      if (data.stats && data.stats.length > 0) {
+      if (data.stats && Array.isArray(data.stats)) {
         return data.stats;
       }
     }
   } catch {}
 
-  return realTelemetryData.componentStats;
+  return [];
 }
 
 export async function fetchSlowestSpans(limit: number = 20): Promise<SpanRecord[]> {
@@ -226,11 +196,11 @@ export async function fetchSlowestSpans(limit: number = 20): Promise<SpanRecord[
 
     if (res.ok) {
       const data = await res.json();
-      if (data.spans && data.spans.length > 0) {
+      if (data.spans && Array.isArray(data.spans)) {
         return data.spans;
       }
     }
   } catch {}
 
-  return realTelemetryData.slowestSpans.slice(0, limit);
+  return [];
 }

@@ -25,7 +25,7 @@ import {
   fetchDashboardOverview,
   fetchTraceTree,
 } from "@/lib/api";
-import { realTelemetryData } from "@/lib/realTelemetry";
+import { emptyTelemetryData } from "@/lib/emptyTelemetry";
 import type { DashboardTelemetry, SpanRecord, TraceSummary, TraceTree } from "@/lib/types";
 
 export default function MonitoringDashboard() {
@@ -35,7 +35,7 @@ export default function MonitoringDashboard() {
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
   const [lastUpdatedText, setLastUpdatedText] = useState<string>("Updated just now");
 
-  const [telemetry, setTelemetry] = useState<DashboardTelemetry>(realTelemetryData);
+  const [telemetry, setTelemetry] = useState<DashboardTelemetry>(emptyTelemetryData);
   const [selectedTraceTree, setSelectedTraceTree] = useState<TraceTree | null>(null);
   const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
@@ -45,12 +45,12 @@ export default function MonitoringDashboard() {
     setIsRefreshing(true);
     try {
       const data = await fetchDashboardOverview();
-      if (data && data.metrics && data.metrics.totalTraces > 0) {
+      if (data && data.metrics) {
         setTelemetry(data);
       }
       setLastUpdatedText("Updated just now");
     } catch (err) {
-      console.warn("Could not fetch remote overview, using genuine exported traces:", err);
+      console.warn("Could not fetch remote overview, starting with clean telemetry state:", err);
     } finally {
       setIsRefreshing(false);
       setIsLoading(false);
