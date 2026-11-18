@@ -1,4 +1,9 @@
-import { getOrCreateTraceTree, mockRecentTraces } from "./mockTelemetry";
+import {
+  getOrCreateTraceTree,
+  mockBottleneckSpans,
+  mockComponentStats,
+  mockRecentTraces,
+} from "./mockTelemetry";
 import type { ComponentStat, SpanRecord, TraceSummary, TraceTree } from "./types";
 
 const API_BASE = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api").replace(/\/$/, "");
@@ -21,9 +26,14 @@ export async function fetchTraces(limit: number = 50, offset: number = 0, status
     if (res.ok) {
       const data = await res.json();
       const realTraces: TraceSummary[] = data.traces || [];
+      if (realTraces.length >= 6) {
+        return realTraces;
+      }
       if (realTraces.length > 0) {
-        // Merge real traces with mock ones so synthetic telemetry from screenshot is also present
-        return [...realTraces, ...mockRecentTraces];
+        // Pad with mock Quarry traces avoiding ID duplicates
+        const existingIds = new Set(realTraces.map((t) => t.trace_id));
+        const additional = mockRecentTraces.filter((t) => !existingIds.has(t.trace_id));
+        return [...realTraces, ...additional];
       }
     }
   } catch (err) {
@@ -72,52 +82,14 @@ export async function fetchComponentStats(sinceHours: number = 24): Promise<Comp
 
     if (res.ok) {
       const data = await res.json();
-      return data.stats || [];
+      if (data.stats && data.stats.length > 0) {
+        return data.stats;
+      }
     }
   } catch {}
 
-  // Fallback stats matching the screenshot components
-  return [
-    {
-      step_type: "retriever",
-      component: "retriever.vector_search",
-      total_calls: 18240,
-      avg_duration_ms: 312,
-      min_duration_ms: 110,
-      max_duration_ms: 850,
-      avg_ttft_ms: null,
-      error_count: 8,
-      error_rate_pct: 0.04,
-      total_prompt_tokens: 0,
-      total_completion_tokens: 0,
-    },
-    {
-      step_type: "database",
-      component: "database.postgres_products",
-      total_calls: 14210,
-      avg_duration_ms: 96,
-      min_duration_ms: 12,
-      max_duration_ms: 480,
-      avg_ttft_ms: null,
-      error_count: 2,
-      error_rate_pct: 0.01,
-      total_prompt_tokens: 0,
-      total_completion_tokens: 0,
-    },
-    {
-      step_type: "llm",
-      component: "llm.deepinfra",
-      total_calls: 18100,
-      avg_duration_ms: 2200,
-      min_duration_ms: 650,
-      max_duration_ms: 4210,
-      avg_ttft_ms: 295,
-      error_count: 146,
-      error_rate_pct: 0.8,
-      total_prompt_tokens: 14200000,
-      total_completion_tokens: 3300000,
-    },
-  ];
+  // Fallback stats representing Quarry's core architecture
+  return mockComponentStats;
 }
 
 export async function fetchSlowestSpans(limit: number = 20): Promise<SpanRecord[]> {
@@ -134,11 +106,12 @@ export async function fetchSlowestSpans(limit: number = 20): Promise<SpanRecord[
 
     if (res.ok) {
       const data = await res.json();
-      return data.spans || [];
+      if (data.spans && data.spans.length > 0) {
+        return data.spans;
+      }
     }
   } catch {}
 
-  // Return slowest spans from mock
-  const tree = getOrCreateTraceTree("tr_5a9e63");
-  return tree.spans.filter((s) => s.duration_ms > 1000);
+  // Return slowest spans from Quarry mock bottlenecks
+  return mockBottleneckSpans.slice(0, limit);
 }

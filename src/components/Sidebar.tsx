@@ -36,12 +36,17 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeNav, onSelectNav }) => {
       {/* Brand Header */}
       <div className="flex h-16 items-center px-5 border-b border-[#1E293B]">
         <div className="flex items-center space-x-3">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-600 text-white font-bold text-lg shadow-md shadow-blue-600/30">
-            B
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-tr from-cyan-600 to-emerald-500 text-white font-bold text-lg shadow-md shadow-cyan-600/30">
+            Q
           </div>
-          <span className="font-bold text-white text-base tracking-wider uppercase font-sans">
-            BLIPCART
-          </span>
+          <div>
+            <span className="font-bold text-white text-base tracking-wider uppercase font-sans">
+              QUARRY
+            </span>
+            <span className="block text-[10px] text-cyan-400 font-medium -mt-0.5">
+              OBSERVABILITY
+            </span>
+          </div>
         </div>
       </div>
 
@@ -75,10 +80,13 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeNav, onSelectNav }) => {
       <div className="border-t border-[#1E293B] p-3">
         <button className="flex w-full items-center justify-between rounded-lg bg-[#0F172A] p-2.5 text-xs text-slate-300 border border-[#1E293B] hover:border-slate-700 transition-colors">
           <div className="flex items-center gap-2 truncate">
-            <div className="flex h-5 w-5 items-center justify-center rounded-full bg-blue-500/20 text-blue-400">
-              <User className="h-3 w-3" />
+            <div className="flex h-5 w-5 items-center justify-center rounded-full bg-cyan-500/20 text-cyan-400">
+              <Database className="h-3 w-3" />
             </div>
-            <span className="font-medium truncate text-white">Shopping assistant</span>
+            <div className="truncate text-left">
+              <span className="font-medium truncate text-white block">Quarry Engine</span>
+              <span className="text-[10px] text-slate-500 block truncate">ws_analytics_prod</span>
+            </div>
           </div>
           <ChevronDown className="h-3.5 w-3.5 text-slate-500 flex-shrink-0" />
         </button>

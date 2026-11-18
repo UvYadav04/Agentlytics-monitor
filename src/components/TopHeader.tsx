@@ -27,7 +27,7 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
       {/* Left Breadcrumb & Badges */}
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex items-center text-xs text-slate-400 font-medium">
-          <span className="hover:text-slate-200 cursor-pointer">Shopping assistant</span>
+          <span className="hover:text-slate-200 cursor-pointer">Quarry Data Engine</span>
           <span className="mx-2 text-slate-600">/</span>
           <span className="text-slate-200 font-semibold">Observability</span>
         </div>
@@ -37,8 +37,8 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
           Production
         </span>
 
-        <span className="inline-flex items-center rounded-md border border-slate-700/60 bg-[#0F172A] px-2 py-0.5 text-[10px] font-medium text-slate-400 uppercase tracking-wider">
-          DEMO • synthetic telemetry
+        <span className="inline-flex items-center rounded-md border border-cyan-700/60 bg-[#0F172A] px-2 py-0.5 text-[10px] font-medium text-cyan-300 uppercase tracking-wider">
+          Multi-Agent Pipeline
         </span>
       </div>
 

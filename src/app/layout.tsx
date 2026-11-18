@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "DataAnalyzer Observability & Tracing",
-  description: "Fine-grained monitoring and tracing for AI pipelines, LLMs, RAG, and sandboxes",
+  title: "Quarry Observability & Pipeline Tracing",
+  description: "Observability, trace waterfall, component latency breakdowns, and sandbox execution monitoring for Quarry AI Data Platform",
 };
 
 export default function RootLayout({
