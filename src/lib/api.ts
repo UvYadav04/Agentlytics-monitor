@@ -1,14 +1,17 @@
 import { realTelemetryData, realTraceTrees } from "./realTelemetry";
 import type { ComponentStat, DashboardTelemetry, SpanRecord, TraceSummary, TraceTree } from "./types";
 
-const API_BASE = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api").replace(/\/$/, "");
+const BASE_PATH = (process.env.NEXT_PUBLIC_BASE_PATH ?? "/monitoring").replace(/\/$/, "");
+const INTERNAL_API = `${BASE_PATH}/api/monitoring`;
+const EXTERNAL_API = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api").replace(/\/$/, "");
 
 export async function fetchDashboardOverview(): Promise<DashboardTelemetry> {
+  // 1. Try Next.js internal API (queries /app/traces/traces.db directly)
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 2500);
 
-    const res = await fetch(`${API_BASE}/monitoring/overview`, {
+    const res = await fetch(`${INTERNAL_API}/overview`, {
       credentials: "include",
       headers: { "Content-Type": "application/json" },
       signal: controller.signal,
@@ -27,22 +30,48 @@ export async function fetchDashboardOverview(): Promise<DashboardTelemetry> {
         };
       }
     }
-  } catch (err) {
-    // API not reachable or offline, fallback to genuine exported telemetry from traces.db
-  }
+  } catch {}
 
+  // 2. Try FastAPI backend API (queries /app/traces/traces.db via storage.py)
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 2500);
+
+    const res = await fetch(`${EXTERNAL_API}/monitoring/overview`, {
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.metrics && data.metrics.totalTraces > 0) {
+        return {
+          metrics: data.metrics,
+          timeline: data.timeline || realTelemetryData.timeline,
+          componentStats: data.componentStats || realTelemetryData.componentStats,
+          recentTraces: data.recentTraces || realTelemetryData.recentTraces,
+          slowestSpans: data.slowestSpans || realTelemetryData.slowestSpans,
+        };
+      }
+    }
+  } catch {}
+
+  // 3. Fallback to exported telemetry
   return realTelemetryData;
 }
 
 export async function fetchTraces(limit: number = 50, offset: number = 0, status?: string): Promise<TraceSummary[]> {
-  try {
-    const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
-    if (status) params.set("status", status);
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  if (status) params.set("status", status);
 
+  // 1. Try Next.js internal route (direct DB)
+  try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 2000);
 
-    const res = await fetch(`${API_BASE}/monitoring/traces?${params.toString()}`, {
+    const res = await fetch(`${INTERNAL_API}/traces?${params.toString()}`, {
       credentials: "include",
       headers: { "Content-Type": "application/json" },
       signal: controller.signal,
@@ -56,9 +85,28 @@ export async function fetchTraces(limit: number = 50, offset: number = 0, status
         return realTraces;
       }
     }
-  } catch (err) {
-    // API not running or unreachable, fallback to real traces from DB export
-  }
+  } catch {}
+
+  // 2. Try FastAPI backend
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 2000);
+
+    const res = await fetch(`${EXTERNAL_API}/monitoring/traces?${params.toString()}`, {
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+
+    if (res.ok) {
+      const data = await res.json();
+      const realTraces: TraceSummary[] = data.traces || [];
+      if (realTraces.length > 0) {
+        return realTraces;
+      }
+    }
+  } catch {}
 
   return realTelemetryData.recentTraces.slice(offset, offset + limit);
 }
@@ -69,11 +117,12 @@ export async function fetchTraceTree(traceId: string): Promise<TraceTree> {
     return realTraceTrees[traceId];
   }
 
+  // 1. Try Next.js internal route (direct DB)
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 2000);
 
-    const res = await fetch(`${API_BASE}/monitoring/traces/${encodeURIComponent(traceId)}`, {
+    const res = await fetch(`${INTERNAL_API}/traces/${encodeURIComponent(traceId)}`, {
       credentials: "include",
       headers: { "Content-Type": "application/json" },
       signal: controller.signal,
@@ -86,9 +135,27 @@ export async function fetchTraceTree(traceId: string): Promise<TraceTree> {
         return data;
       }
     }
-  } catch (err) {
-    // API not running or unreachable
-  }
+  } catch {}
+
+  // 2. Try FastAPI backend
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 2000);
+
+    const res = await fetch(`${EXTERNAL_API}/monitoring/traces/${encodeURIComponent(traceId)}`, {
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.spans && data.spans.length > 0) {
+        return data;
+      }
+    }
+  } catch {}
 
   // Fallback to finding trace in recent traces
   const trace = realTelemetryData.recentTraces.find((t) => t.trace_id === traceId);
@@ -127,7 +194,7 @@ export async function fetchComponentStats(sinceHours: number = 720): Promise<Com
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 2000);
 
-    const res = await fetch(`${API_BASE}/monitoring/stats?since_hours=${sinceHours}`, {
+    const res = await fetch(`${EXTERNAL_API}/monitoring/stats?since_hours=${sinceHours}`, {
       credentials: "include",
       headers: { "Content-Type": "application/json" },
       signal: controller.signal,
@@ -150,7 +217,7 @@ export async function fetchSlowestSpans(limit: number = 20): Promise<SpanRecord[
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 2000);
 
-    const res = await fetch(`${API_BASE}/monitoring/slowest?limit=${limit}`, {
+    const res = await fetch(`${EXTERNAL_API}/monitoring/slowest?limit=${limit}`, {
       credentials: "include",
       headers: { "Content-Type": "application/json" },
       signal: controller.signal,

@@ -11,4 +11,10 @@ services:
     restart: unless-stopped
     ports:
       - "3001:3001"
+    environment:
+      - MONITORING_TRACES_DIR=/app/traces
+      - MONITORING_DB_PATH=/app/traces/traces.db
+    volumes:
+      - ./traces:/app/traces:ro
+      - ../Server/traces:/app/traces-host:ro
 
