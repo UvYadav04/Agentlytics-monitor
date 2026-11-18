@@ -1,12 +1,38 @@
-import {
-  getOrCreateTraceTree,
-  mockBottleneckSpans,
-  mockComponentStats,
-  mockRecentTraces,
-} from "./mockTelemetry";
-import type { ComponentStat, SpanRecord, TraceSummary, TraceTree } from "./types";
+import { realTelemetryData, realTraceTrees } from "./realTelemetry";
+import type { ComponentStat, DashboardTelemetry, SpanRecord, TraceSummary, TraceTree } from "./types";
 
 const API_BASE = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api").replace(/\/$/, "");
+
+export async function fetchDashboardOverview(): Promise<DashboardTelemetry> {
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 2500);
+
+    const res = await fetch(`${API_BASE}/monitoring/overview`, {
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.metrics && data.metrics.totalTraces > 0) {
+        return {
+          metrics: data.metrics,
+          timeline: data.timeline || realTelemetryData.timeline,
+          componentStats: data.componentStats || realTelemetryData.componentStats,
+          recentTraces: data.recentTraces || realTelemetryData.recentTraces,
+          slowestSpans: data.slowestSpans || realTelemetryData.slowestSpans,
+        };
+      }
+    }
+  } catch (err) {
+    // API not reachable or offline, fallback to genuine exported telemetry from traces.db
+  }
+
+  return realTelemetryData;
+}
 
 export async function fetchTraces(limit: number = 50, offset: number = 0, status?: string): Promise<TraceSummary[]> {
   try {
@@ -26,24 +52,23 @@ export async function fetchTraces(limit: number = 50, offset: number = 0, status
     if (res.ok) {
       const data = await res.json();
       const realTraces: TraceSummary[] = data.traces || [];
-      if (realTraces.length >= 6) {
-        return realTraces;
-      }
       if (realTraces.length > 0) {
-        // Pad with mock Quarry traces avoiding ID duplicates
-        const existingIds = new Set(realTraces.map((t) => t.trace_id));
-        const additional = mockRecentTraces.filter((t) => !existingIds.has(t.trace_id));
-        return [...realTraces, ...additional];
+        return realTraces;
       }
     }
   } catch (err) {
-    // API not running or unreachable, fallback to mock traces seamlessly
+    // API not running or unreachable, fallback to real traces from DB export
   }
 
-  return mockRecentTraces;
+  return realTelemetryData.recentTraces.slice(offset, offset + limit);
 }
 
 export async function fetchTraceTree(traceId: string): Promise<TraceTree> {
+  // Check if we have the real tree in pre-exported realTraceTrees
+  if (realTraceTrees[traceId] && realTraceTrees[traceId].spans.length > 0) {
+    return realTraceTrees[traceId];
+  }
+
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 2000);
@@ -62,13 +87,42 @@ export async function fetchTraceTree(traceId: string): Promise<TraceTree> {
       }
     }
   } catch (err) {
-    // API not running or unreachable, fallback to mock trace tree
+    // API not running or unreachable
   }
 
-  return getOrCreateTraceTree(traceId);
+  // Fallback to finding trace in recent traces
+  const trace = realTelemetryData.recentTraces.find((t) => t.trace_id === traceId);
+  const now = trace?.start_time || Date.now() / 1000;
+  const duration = trace?.total_duration_ms || 2400;
+
+  const fallbackSpan: SpanRecord = {
+    span_id: `spn_root_${traceId.slice(-6)}`,
+    trace_id: traceId,
+    parent_span_id: null,
+    step_name: trace?.intent || "Data Investigation",
+    component: trace?.route || "agent.orchestrator",
+    step_type: "agent",
+    status: trace?.status === "Error" ? "error" : "success",
+    start_time: now,
+    end_time: now + duration / 1000,
+    duration_ms: duration,
+    prompt_tokens: trace?.total_prompt_tokens || 0,
+    completion_tokens: trace?.total_completion_tokens || 0,
+    total_tokens: trace?.total_tokens || 0,
+    inputs: { objective: trace?.query || "Execution of data pipeline" },
+    outputs: { result: "Completed trace investigation from records" },
+    created_at: trace?.created_at || new Date().toISOString(),
+  };
+
+  return {
+    trace_id: traceId,
+    total_spans: 1,
+    roots: [fallbackSpan],
+    spans: [fallbackSpan],
+  };
 }
 
-export async function fetchComponentStats(sinceHours: number = 24): Promise<ComponentStat[]> {
+export async function fetchComponentStats(sinceHours: number = 720): Promise<ComponentStat[]> {
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 2000);
@@ -88,8 +142,7 @@ export async function fetchComponentStats(sinceHours: number = 24): Promise<Comp
     }
   } catch {}
 
-  // Fallback stats representing Quarry's core architecture
-  return mockComponentStats;
+  return realTelemetryData.componentStats;
 }
 
 export async function fetchSlowestSpans(limit: number = 20): Promise<SpanRecord[]> {
@@ -112,6 +165,5 @@ export async function fetchSlowestSpans(limit: number = 20): Promise<SpanRecord[
     }
   } catch {}
 
-  // Return slowest spans from Quarry mock bottlenecks
-  return mockBottleneckSpans.slice(0, limit);
+  return realTelemetryData.slowestSpans.slice(0, limit);
 }

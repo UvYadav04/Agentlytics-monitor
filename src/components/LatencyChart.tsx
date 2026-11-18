@@ -1,20 +1,30 @@
 "use client";
 
 import React, { useState } from "react";
-import type { LatencyPoint } from "@/lib/types";
+import type { ActivityPoint } from "@/lib/types";
 
 interface LatencyChartProps {
-  data: LatencyPoint[];
+  data: ActivityPoint[];
 }
 
 export const LatencyChart: React.FC<LatencyChartProps> = ({ data }) => {
   const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
 
-  const maxY = 4.0;
+  if (!data || data.length === 0) {
+    return (
+      <div className="flex h-full flex-col justify-between rounded-xl border border-[#1E293B] bg-[#0F172A] p-5 shadow-card">
+        <h3 className="text-sm font-semibold text-white">End-to-end Latency</h3>
+        <p className="text-xs text-slate-500 my-auto text-center">No latency data available</p>
+      </div>
+    );
+  }
+
+  const rawMax = Math.max(...data.map((d) => d.p95 || 0), 10);
+  const maxY = Math.ceil(rawMax / 10) * 10 || 40;
   const chartWidth = 540;
   const chartHeight = 180;
-  const paddingLeft = 35;
-  const paddingRight = 35;
+  const paddingLeft = 45;
+  const paddingRight = 20;
   const paddingTop = 20;
   const paddingBottom = 30;
 
@@ -22,14 +32,13 @@ export const LatencyChart: React.FC<LatencyChartProps> = ({ data }) => {
   const innerHeight = chartHeight - paddingTop - paddingBottom;
 
   const points = data.map((d, i) => {
-    const x = paddingLeft + (i / (data.length - 1)) * innerWidth;
-    const y50 = paddingTop + innerHeight - (Math.min(maxY, d.p50) / maxY) * innerHeight;
-    const y95 = paddingTop + innerHeight - (Math.min(maxY, d.p95) / maxY) * innerHeight;
-    return { ...d, x, y50, y95 };
+    const x = paddingLeft + (i / Math.max(1, data.length - 1)) * innerWidth;
+    const p50Val = d.p50 ?? 0;
+    const p95Val = d.p95 ?? 0;
+    const y50 = paddingTop + innerHeight - (Math.min(maxY, p50Val) / maxY) * innerHeight;
+    const y95 = paddingTop + innerHeight - (Math.min(maxY, p95Val) / maxY) * innerHeight;
+    return { ...d, x, y50, y95, p50Val, p95Val };
   });
-
-  // Calculate SLO Y coordinate (SLO = 3.0s)
-  const sloY = paddingTop + innerHeight - (3.0 / maxY) * innerHeight;
 
   // Build curved SVG path for p50
   let p50D = `M ${points[0].x} ${points[0].y50}`;
@@ -51,11 +60,16 @@ export const LatencyChart: React.FC<LatencyChartProps> = ({ data }) => {
 
   const hoveredPoint = hoveredIdx !== null ? points[hoveredIdx] : null;
 
+  const yTicks = [maxY, Math.round(maxY / 2), 0];
+
   return (
     <div className="flex h-full flex-col justify-between rounded-xl border border-[#1E293B] bg-[#0F172A] p-5 shadow-card">
       {/* Title */}
       <div className="flex items-center justify-between">
-        <h3 className="text-sm font-semibold text-white">End-to-end latency</h3>
+        <div>
+          <h3 className="text-sm font-semibold text-white">End-to-end Latency</h3>
+          <p className="text-[11px] text-slate-400">P50 and P95 execution duration of investigations</p>
+        </div>
       </div>
 
       {/* SVG Chart Area */}
@@ -66,7 +80,7 @@ export const LatencyChart: React.FC<LatencyChartProps> = ({ data }) => {
           onMouseLeave={() => setHoveredIdx(null)}
         >
           {/* Horizontal Grid lines */}
-          {[4, 2, 0].map((val) => {
+          {yTicks.map((val) => {
             const y = paddingTop + innerHeight - (val / maxY) * innerHeight;
             return (
               <g key={val}>
@@ -85,7 +99,7 @@ export const LatencyChart: React.FC<LatencyChartProps> = ({ data }) => {
                   textAnchor="end"
                   className="text-[10px] fill-slate-500 font-mono select-none"
                 >
-                  {val}
+                  {val}s
                 </text>
               </g>
             );
@@ -93,33 +107,13 @@ export const LatencyChart: React.FC<LatencyChartProps> = ({ data }) => {
 
           {/* Left Y Axis Label */}
           <text
-            x={10}
+            x={12}
             y={chartHeight / 2}
-            transform={`rotate(-90, 10, ${chartHeight / 2})`}
+            transform={`rotate(-90, 12, ${chartHeight / 2})`}
             textAnchor="middle"
             className="text-[9px] fill-slate-500 font-sans tracking-wide select-none"
           >
             Seconds
-          </text>
-
-          {/* SLO Threshold Line (Dashed) */}
-          <line
-            x1={paddingLeft}
-            y1={sloY}
-            x2={chartWidth - paddingRight}
-            y2={sloY}
-            stroke="#94A3B8"
-            strokeWidth="1.2"
-            strokeDasharray="4 3"
-            opacity="0.8"
-          />
-          <text
-            x={chartWidth - paddingRight}
-            y={sloY - 4}
-            textAnchor="end"
-            className="text-[9px] fill-slate-400 font-mono select-none"
-          >
-            SLO 3.0 s
           </text>
 
           {/* p50 Line (Blue) */}
@@ -127,7 +121,7 @@ export const LatencyChart: React.FC<LatencyChartProps> = ({ data }) => {
             d={p50D}
             fill="none"
             stroke="#38BDF8"
-            strokeWidth="2"
+            strokeWidth="2.2"
             strokeLinecap="round"
             strokeLinejoin="round"
           />
@@ -136,35 +130,32 @@ export const LatencyChart: React.FC<LatencyChartProps> = ({ data }) => {
           <path
             d={p95D}
             fill="none"
-            stroke="#FBBF24"
-            strokeWidth="2"
+            stroke="#F59E0B"
+            strokeWidth="2.2"
             strokeLinecap="round"
             strokeLinejoin="round"
           />
 
           {/* X Axis Ticks */}
-          {["10:00", "10:15", "10:30", "10:45", "11:00"].map((label, idx) => {
-            const x = paddingLeft + (idx / 4) * innerWidth;
-            return (
-              <text
-                key={label}
-                x={x}
-                y={chartHeight - 8}
-                textAnchor="middle"
-                className="text-[10px] fill-slate-400 font-mono select-none"
-              >
-                {label}
-              </text>
-            );
-          })}
+          {points.map((p, idx) => (
+            <text
+              key={idx}
+              x={p.x}
+              y={chartHeight - 8}
+              textAnchor="middle"
+              className="text-[10px] fill-slate-400 font-mono select-none"
+            >
+              {p.time}
+            </text>
+          ))}
 
           {/* Hover hit areas */}
           {points.map((p, idx) => (
             <rect
               key={idx}
-              x={p.x - innerWidth / points.length / 2}
+              x={p.x - innerWidth / Math.max(1, points.length) / 2}
               y={paddingTop}
-              width={innerWidth / points.length}
+              width={innerWidth / Math.max(1, points.length)}
               height={innerHeight}
               fill="transparent"
               className="cursor-pointer"
@@ -172,7 +163,7 @@ export const LatencyChart: React.FC<LatencyChartProps> = ({ data }) => {
             />
           ))}
 
-          {/* Active Hover Cursor */}
+          {/* Active Hover Marker */}
           {hoveredPoint && (
             <g>
               <line
@@ -184,8 +175,22 @@ export const LatencyChart: React.FC<LatencyChartProps> = ({ data }) => {
                 strokeWidth="1"
                 strokeDasharray="2 2"
               />
-              <circle cx={hoveredPoint.x} cy={hoveredPoint.y50} r="4" fill="#38BDF8" stroke="#0F172A" strokeWidth="2" />
-              <circle cx={hoveredPoint.x} cy={hoveredPoint.y95} r="4" fill="#FBBF24" stroke="#0F172A" strokeWidth="2" />
+              <circle
+                cx={hoveredPoint.x}
+                cy={hoveredPoint.y50}
+                r="4.5"
+                fill="#38BDF8"
+                stroke="#0F172A"
+                strokeWidth="2"
+              />
+              <circle
+                cx={hoveredPoint.x}
+                cy={hoveredPoint.y95}
+                r="4.5"
+                fill="#F59E0B"
+                stroke="#0F172A"
+                strokeWidth="2"
+              />
             </g>
           )}
         </svg>
@@ -193,16 +198,17 @@ export const LatencyChart: React.FC<LatencyChartProps> = ({ data }) => {
         {/* Floating Tooltip */}
         {hoveredPoint && (
           <div
-            className="pointer-events-none absolute z-10 rounded-md border border-slate-700 bg-slate-900/90 px-3 py-1.5 text-xs text-white shadow-xl backdrop-blur-sm -translate-x-1/2 -translate-y-full"
+            className="pointer-events-none absolute z-10 rounded-md border border-slate-700 bg-slate-900/90 px-3 py-2 text-xs text-white shadow-xl backdrop-blur-sm -translate-x-1/2 -translate-y-full"
             style={{
               left: `${(hoveredPoint.x / chartWidth) * 100}%`,
-              top: `${(Math.min(hoveredPoint.y50, hoveredPoint.y95) / chartHeight) * 100 - 10}%`,
+              top: `${(Math.min(hoveredPoint.y50, hoveredPoint.y95) / chartHeight) * 100 - 8}%`,
             }}
           >
-            <div className="font-mono text-[10px] text-slate-400 mb-1">{hoveredPoint.time}</div>
-            <div className="flex items-center gap-3 font-mono text-[11px]">
-              <span className="text-cyan-400">p50: {hoveredPoint.p50.toFixed(2)}s</span>
-              <span className="text-amber-400">p95: {hoveredPoint.p95.toFixed(2)}s</span>
+            <div className="font-mono text-[10px] text-slate-400 mb-1">{hoveredPoint.date || hoveredPoint.time}</div>
+            <div className="flex items-center gap-2 font-mono">
+              <span className="text-cyan-400 font-bold">p50: {hoveredPoint.p50Val.toFixed(1)}s</span>
+              <span className="text-slate-500">•</span>
+              <span className="text-amber-400 font-bold">p95: {hoveredPoint.p95Val.toFixed(1)}s</span>
             </div>
           </div>
         )}
@@ -212,15 +218,11 @@ export const LatencyChart: React.FC<LatencyChartProps> = ({ data }) => {
       <div className="mt-2 flex items-center justify-center gap-4 border-t border-[#1E293B]/60 pt-2 text-xs">
         <div className="flex items-center gap-1.5">
           <span className="h-2 w-2 rounded-full bg-cyan-400" />
-          <span className="text-[11px] font-medium text-slate-400">p50</span>
+          <span className="text-[11px] font-medium text-slate-400">p50 Latency</span>
         </div>
         <div className="flex items-center gap-1.5">
           <span className="h-2 w-2 rounded-full bg-amber-400" />
-          <span className="text-[11px] font-medium text-slate-400">p95</span>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <span className="inline-block w-3 border-b-2 border-dashed border-slate-400" />
-          <span className="text-[11px] font-medium text-slate-400">SLO</span>
+          <span className="text-[11px] font-medium text-slate-400">p95 Latency</span>
         </div>
       </div>
     </div>

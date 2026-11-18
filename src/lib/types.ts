@@ -87,51 +87,40 @@ export interface ComponentStat {
   total_completion_tokens: number;
 }
 
-export interface ServiceHealthItem {
-  id: string;
-  name: string;
-  p95_ms: number;
-  status: "healthy" | "latency_watch" | "degraded" | "down";
+export interface OverviewMetrics {
+  totalTraces: number;
+  totalSpans: number;
+  p50LatencySec: number;
+  p95LatencySec: number;
+  avgLatencySec?: number;
+  errorRatePct: number;
+  failedTracesCount: number;
+  totalTokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  llmCallsCount: number;
+  databaseCallsCount: number;
 }
 
-export interface TrafficPoint {
+export interface ActivityPoint {
   time: string;
-  requestsPerSec: number;
+  date?: string;
+  count: number;
+  p50?: number;
+  p95?: number;
 }
 
 export interface LatencyPoint {
   time: string;
+  date?: string;
   p50: number;
   p95: number;
-  slo: number;
 }
 
 export interface DashboardTelemetry {
-  metrics: {
-    totalRequests: number;
-    requestsChangePct: number;
-    requestRate: number;
-    peakRequestRate: number;
-    p95LatencySec: number;
-    targetLatencySec: number;
-    errorRatePct: number;
-    failedRequestsCount: number;
-    totalTokens: number;
-    inputTokens: number;
-    outputTokens: number;
-    llmSpendUsd: number;
-  };
-  trafficSeries: TrafficPoint[];
-  latencySeries: LatencyPoint[];
-  services: ServiceHealthItem[];
-  alertBanner?: {
-    message: string;
-    level: "warning" | "error" | "info";
-  } | null;
-  retrievalQuality: {
-    noResultRatePct: number;
-    topK: number;
-    p95RetrievalMs: number;
-  };
+  metrics: OverviewMetrics;
+  timeline: ActivityPoint[];
+  componentStats: ComponentStat[];
   recentTraces: TraceSummary[];
+  slowestSpans: SpanRecord[];
 }

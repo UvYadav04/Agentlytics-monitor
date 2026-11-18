@@ -1,20 +1,30 @@
 "use client";
 
 import React, { useState } from "react";
-import type { TrafficPoint } from "@/lib/types";
+import type { ActivityPoint } from "@/lib/types";
 
 interface RequestTrafficChartProps {
-  data: TrafficPoint[];
+  data: ActivityPoint[];
 }
 
 export const RequestTrafficChart: React.FC<RequestTrafficChartProps> = ({ data }) => {
   const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
 
-  const maxY = 10;
+  if (!data || data.length === 0) {
+    return (
+      <div className="flex h-full flex-col justify-between rounded-xl border border-[#1E293B] bg-[#0F172A] p-5 shadow-card">
+        <h3 className="text-sm font-semibold text-white">Investigation Activity</h3>
+        <p className="text-xs text-slate-500 my-auto text-center">No trace activity data available</p>
+      </div>
+    );
+  }
+
+  const rawMax = Math.max(...data.map((d) => d.count), 10);
+  const maxY = Math.ceil(rawMax / 100) * 100 || 100;
   const chartWidth = 540;
   const chartHeight = 180;
-  const paddingLeft = 35;
-  const paddingRight = 15;
+  const paddingLeft = 45;
+  const paddingRight = 20;
   const paddingTop = 20;
   const paddingBottom = 30;
 
@@ -22,8 +32,8 @@ export const RequestTrafficChart: React.FC<RequestTrafficChartProps> = ({ data }
   const innerHeight = chartHeight - paddingTop - paddingBottom;
 
   const points = data.map((d, i) => {
-    const x = paddingLeft + (i / (data.length - 1)) * innerWidth;
-    const y = paddingTop + innerHeight - (Math.min(maxY, d.requestsPerSec) / maxY) * innerHeight;
+    const x = paddingLeft + (i / Math.max(1, data.length - 1)) * innerWidth;
+    const y = paddingTop + innerHeight - (Math.min(maxY, d.count) / maxY) * innerHeight;
     return { ...d, x, y };
   });
 
@@ -42,11 +52,16 @@ export const RequestTrafficChart: React.FC<RequestTrafficChartProps> = ({ data }
 
   const hoveredPoint = hoveredIdx !== null ? points[hoveredIdx] : null;
 
+  const yTicks = [maxY, Math.round(maxY / 2), 0];
+
   return (
     <div className="flex h-full flex-col justify-between rounded-xl border border-[#1E293B] bg-[#0F172A] p-5 shadow-card">
       {/* Title */}
       <div className="flex items-center justify-between">
-        <h3 className="text-sm font-semibold text-white">Request traffic</h3>
+        <div>
+          <h3 className="text-sm font-semibold text-white">Investigation Activity</h3>
+          <p className="text-[11px] text-slate-400">Total traced multi-agent investigations over time</p>
+        </div>
       </div>
 
       {/* SVG Chart Area */}
@@ -65,7 +80,7 @@ export const RequestTrafficChart: React.FC<RequestTrafficChartProps> = ({ data }
           </defs>
 
           {/* Horizontal Grid lines */}
-          {[10, 5, 0].map((val) => {
+          {yTicks.map((val) => {
             const y = paddingTop + innerHeight - (val / maxY) * innerHeight;
             return (
               <g key={val}>
@@ -92,13 +107,13 @@ export const RequestTrafficChart: React.FC<RequestTrafficChartProps> = ({ data }
 
           {/* Left Y Axis Label */}
           <text
-            x={10}
+            x={12}
             y={chartHeight / 2}
-            transform={`rotate(-90, 10, ${chartHeight / 2})`}
+            transform={`rotate(-90, 12, ${chartHeight / 2})`}
             textAnchor="middle"
             className="text-[9px] fill-slate-500 font-sans tracking-wide select-none"
           >
-            Requests / sec
+            Traces
           </text>
 
           {/* Filled Area */}
@@ -115,28 +130,25 @@ export const RequestTrafficChart: React.FC<RequestTrafficChartProps> = ({ data }
           />
 
           {/* X Axis Ticks */}
-          {["10:00", "10:15", "10:30", "10:45", "11:00"].map((label, idx) => {
-            const x = paddingLeft + (idx / 4) * innerWidth;
-            return (
-              <text
-                key={label}
-                x={x}
-                y={chartHeight - 8}
-                textAnchor="middle"
-                className="text-[10px] fill-slate-400 font-mono select-none"
-              >
-                {label}
-              </text>
-            );
-          })}
+          {points.map((p, idx) => (
+            <text
+              key={idx}
+              x={p.x}
+              y={chartHeight - 8}
+              textAnchor="middle"
+              className="text-[10px] fill-slate-400 font-mono select-none"
+            >
+              {p.time}
+            </text>
+          ))}
 
           {/* Hover hit areas */}
           {points.map((p, idx) => (
             <rect
               key={idx}
-              x={p.x - innerWidth / points.length / 2}
+              x={p.x - innerWidth / Math.max(1, points.length) / 2}
               y={paddingTop}
-              width={innerWidth / points.length}
+              width={innerWidth / Math.max(1, points.length)}
               height={innerHeight}
               fill="transparent"
               className="cursor-pointer"
@@ -178,8 +190,8 @@ export const RequestTrafficChart: React.FC<RequestTrafficChartProps> = ({ data }
               top: `${(hoveredPoint.y / chartHeight) * 100 - 8}%`,
             }}
           >
-            <div className="font-mono text-[10px] text-slate-400">{hoveredPoint.time}</div>
-            <div className="font-bold text-cyan-400 font-mono">{hoveredPoint.requestsPerSec.toFixed(1)} /s</div>
+            <div className="font-mono text-[10px] text-slate-400">{hoveredPoint.date || hoveredPoint.time}</div>
+            <div className="font-bold text-cyan-400 font-mono">{hoveredPoint.count} traces</div>
           </div>
         )}
       </div>
@@ -188,7 +200,7 @@ export const RequestTrafficChart: React.FC<RequestTrafficChartProps> = ({ data }
       <div className="mt-2 flex items-center justify-center gap-2 border-t border-[#1E293B]/60 pt-2 text-xs">
         <div className="flex items-center gap-1.5">
           <span className="h-2 w-2 rounded-full bg-cyan-400" />
-          <span className="text-[11px] font-medium text-slate-400">Requests</span>
+          <span className="text-[11px] font-medium text-slate-400">Investigations Traced</span>
         </div>
       </div>
     </div>
