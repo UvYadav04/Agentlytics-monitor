@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { queryTraceTreeFromDb } from "@/lib/sqliteTraces";
+import { deleteTracesFromDb, queryTraceTreeFromDb } from "@/lib/sqliteTraces";
 
 export const dynamic = "force-dynamic";
 
@@ -47,4 +47,41 @@ export async function GET(
     );
   }
 }
+
+export async function DELETE(
+  request: NextRequest,
+  { params }: { params: { traceId: string } }
+) {
+  try {
+    const traceId = params.traceId;
+    if (!traceId) {
+      return NextResponse.json({ error: "No traceId provided" }, { status: 400 });
+    }
+
+    // 1. Delete from local SQLite
+    const dbResult = deleteTracesFromDb([traceId]);
+
+    // 2. Also proxy to backend API if configured
+    const apiBase = (process.env.API_URL || process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api").replace(/\/$/, "");
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 2000);
+      await fetch(`${apiBase}/monitoring/traces/${encodeURIComponent(traceId)}`, {
+        method: "DELETE",
+        signal: controller.signal,
+        headers: { "Content-Type": "application/json" },
+      });
+      clearTimeout(timeoutId);
+    } catch {}
+
+    return NextResponse.json({
+      success: true,
+      deleted_trace_id: traceId,
+      deleted_spans_count: dbResult.deletedCount,
+    });
+  } catch (err: any) {
+    return NextResponse.json({ error: err.message || "Failed to delete trace" }, { status: 500 });
+  }
+}
+
 

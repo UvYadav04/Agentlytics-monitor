@@ -72,6 +72,11 @@ export default function RequestsPage() {
     }
   };
 
+  const handleDeleteRequests = (deletedIds: string[]) => {
+    setAllRequests((prev) => prev.filter((r) => !deletedIds.includes(r.trace_id)));
+    loadData();
+  };
+
   const totalCount = allRequests.length || telemetry.metrics.totalTraces;
   const errorCount = allRequests.filter((t) => t.status === "Error" || t.error_count > 0).length;
   const successCount = Math.max(0, totalCount - errorCount);
@@ -184,6 +189,7 @@ export default function RequestsPage() {
               isLoading={isLoading}
               scrollable={true}
               title="All Recorded User Requests"
+              onDeleteRequests={handleDeleteRequests}
             />
           </div>
         </main>

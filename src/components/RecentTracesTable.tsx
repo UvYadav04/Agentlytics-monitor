@@ -1,9 +1,24 @@
 "use client";
 
 import React, { useState } from "react";
-import { ArrowRight, Filter, Layers, Search, Sparkles, Terminal } from "lucide-react";
+import {
+  AlertTriangle,
+  ArrowRight,
+  Check,
+  CheckSquare,
+  Filter,
+  Layers,
+  Loader2,
+  MinusSquare,
+  Search,
+  Sparkles,
+  Square,
+  Trash2,
+  X,
+} from "lucide-react";
 import { isRealUserRequest, type TraceSummary } from "@/lib/types";
 import { formatDuration } from "@/lib/formatters";
+import { deleteTraces } from "@/lib/api";
 
 interface RecentTracesTableProps {
   traces: TraceSummary[];
@@ -14,6 +29,7 @@ interface RecentTracesTableProps {
   onViewAll?: () => void;
   scrollable?: boolean;
   title?: string;
+  onDeleteRequests?: (deletedTraceIds: string[]) => void | Promise<void>;
 }
 
 export const RecentTracesTable: React.FC<RecentTracesTableProps> = ({
@@ -25,10 +41,21 @@ export const RecentTracesTable: React.FC<RecentTracesTableProps> = ({
   onViewAll,
   scrollable = false,
   title = "Recent Requests",
+  onDeleteRequests,
 }) => {
   const [search, setSearch] = useState("");
   const [filterStatus, setFilterStatus] = useState<string>("all");
   const [showFilters, setShowFilters] = useState(false);
+
+  // Selection state
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [confirmModal, setConfirmModal] = useState<{
+    isOpen: boolean;
+    ids: string[];
+    displayTitle?: string;
+  } | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteToast, setDeleteToast] = useState<string | null>(null);
 
   const userRequests = traces.filter(isRealUserRequest);
 
@@ -55,8 +82,103 @@ export const RecentTracesTable: React.FC<RecentTracesTableProps> = ({
 
   const displayTraces = limit ? filtered.slice(0, limit) : filtered;
 
+  // Selection helpers
+  const isAllSelected =
+    displayTraces.length > 0 && displayTraces.every((t) => selectedIds.has(t.trace_id));
+  const isSomeSelected =
+    displayTraces.some((t) => selectedIds.has(t.trace_id)) && !isAllSelected;
+
+  const toggleSelectOne = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    if (isAllSelected) {
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        displayTraces.forEach((t) => next.delete(t.trace_id));
+        return next;
+      });
+    } else {
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        displayTraces.forEach((t) => next.add(t.trace_id));
+        return next;
+      });
+    }
+  };
+
+  const selectAllTotal = () => {
+    setSelectedIds(new Set(userRequests.map((t) => t.trace_id)));
+  };
+
+  const clearSelection = () => {
+    setSelectedIds(new Set());
+  };
+
+  // Delete Handlers
+  const promptDeleteSingle = (traceId: string, queryTitle?: string) => {
+    setConfirmModal({
+      isOpen: true,
+      ids: [traceId],
+      displayTitle: queryTitle || traceId,
+    });
+  };
+
+  const promptDeleteSelected = () => {
+    if (selectedIds.size === 0) return;
+    setConfirmModal({
+      isOpen: true,
+      ids: Array.from(selectedIds),
+      displayTitle: `${selectedIds.size} selected requests`,
+    });
+  };
+
+  const executeDelete = async () => {
+    if (!confirmModal || confirmModal.ids.length === 0) return;
+    setIsDeleting(true);
+    const idsToDelete = confirmModal.ids;
+
+    try {
+      await deleteTraces(idsToDelete);
+
+      if (onDeleteRequests) {
+        await onDeleteRequests(idsToDelete);
+      }
+
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        idsToDelete.forEach((id) => next.delete(id));
+        return next;
+      });
+
+      setDeleteToast(
+        `Deleted ${idsToDelete.length} request${idsToDelete.length === 1 ? "" : "s"}`
+      );
+      setTimeout(() => setDeleteToast(null), 3000);
+    } catch (err) {
+      console.error("Failed to delete requests:", err);
+    } finally {
+      setIsDeleting(false);
+      setConfirmModal(null);
+    }
+  };
+
   return (
-    <div className="flex h-full flex-col justify-between rounded-xl border border-[#1E293B] bg-[#0F172A] p-5 shadow-card">
+    <div className="flex h-full flex-col justify-between rounded-xl border border-[#1E293B] bg-[#0F172A] p-5 shadow-card relative">
+      {/* Toast Notification */}
+      {deleteToast && (
+        <div className="absolute top-4 right-4 z-40 flex items-center gap-2 rounded-lg bg-emerald-950/90 border border-emerald-600/60 px-3 py-1.5 text-xs text-emerald-300 shadow-lg">
+          <Check className="h-3.5 w-3.5" />
+          <span>{deleteToast}</span>
+        </div>
+      )}
+
       {/* Header with Title and Search/Filter Controls */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between pb-3 border-b border-[#1E293B]">
         <div>
@@ -130,11 +252,57 @@ export const RecentTracesTable: React.FC<RecentTracesTableProps> = ({
         </div>
       )}
 
+      {/* Bulk Action Bar (Visible when 1 or more items are selected) */}
+      {selectedIds.size > 0 && (
+        <div className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-xl bg-cyan-950/40 border border-cyan-500/40 p-2.5 px-4 text-xs">
+          <div className="flex items-center gap-3">
+            <span className="font-semibold text-cyan-300 font-mono">
+              {selectedIds.size} {selectedIds.size === 1 ? "request" : "requests"} selected
+            </span>
+            {userRequests.length > displayTraces.length && selectedIds.size < userRequests.length && (
+              <button
+                onClick={selectAllTotal}
+                className="text-[11px] text-cyan-400 hover:underline font-medium"
+              >
+                Select all {userRequests.length} in store
+              </button>
+            )}
+            <button
+              onClick={clearSelection}
+              className="text-[11px] text-slate-400 hover:text-white underline font-medium"
+            >
+              Clear selection
+            </button>
+          </div>
+
+          <button
+            onClick={promptDeleteSelected}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-rose-600/20 text-rose-300 hover:bg-rose-600/30 border border-rose-500/50 px-3 py-1 font-semibold transition-colors"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            <span>Delete Selected ({selectedIds.size})</span>
+          </button>
+        </div>
+      )}
+
       {/* Table Container */}
       <div className={`mt-2 flex-1 overflow-x-auto ${scrollable ? "max-h-[640px] overflow-y-auto" : ""}`}>
         <table className="w-full text-left text-xs">
           <thead className={scrollable ? "sticky top-0 bg-[#0F172A] z-10 shadow-sm" : ""}>
             <tr className="border-b border-[#1E293B] text-[11px] font-medium text-slate-400">
+              {/* Checkbox column header */}
+              <th className="pb-2.5 pt-1 w-9 text-center pl-1">
+                <input
+                  type="checkbox"
+                  checked={isAllSelected}
+                  ref={(el) => {
+                    if (el) el.indeterminate = isSomeSelected;
+                  }}
+                  onChange={toggleSelectAll}
+                  className="rounded border-[#1E293B] bg-[#070C19] text-cyan-500 focus:ring-cyan-500/30 cursor-pointer h-3.5 w-3.5"
+                  title="Select all"
+                />
+              </th>
               <th className="pb-2.5 pt-1 font-medium pl-1">Request / Query</th>
               <th className="pb-2.5 pt-1 font-medium">Steps</th>
               <th className="pb-2.5 pt-1 font-medium">Intent / Route</th>
@@ -142,18 +310,19 @@ export const RecentTracesTable: React.FC<RecentTracesTableProps> = ({
               <th className="pb-2.5 pt-1 font-medium">Tokens</th>
               <th className="pb-2.5 pt-1 font-medium">Status</th>
               <th className="pb-2.5 pt-1 font-medium text-right pr-2">Time ↓</th>
+              <th className="pb-2.5 pt-1 font-medium text-center w-12">Action</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-[#1E293B]/40">
             {isLoading ? (
               <tr>
-                <td colSpan={7} className="py-8 text-center text-slate-500">
+                <td colSpan={9} className="py-8 text-center text-slate-500">
                   Loading requests...
                 </td>
               </tr>
             ) : displayTraces.length === 0 ? (
               <tr>
-                <td colSpan={7} className="py-8 text-center text-slate-500">
+                <td colSpan={9} className="py-8 text-center text-slate-500">
                   {traces.length === 0
                     ? "No user requests recorded yet. Requests will appear here once queries run through Quarry Engine."
                     : "No requests found matching filter."}
@@ -161,7 +330,8 @@ export const RecentTracesTable: React.FC<RecentTracesTableProps> = ({
               </tr>
             ) : (
               displayTraces.map((t) => {
-                const isSelected = selectedTraceId === t.trace_id;
+                const isSelectedTrace = selectedTraceId === t.trace_id;
+                const isRowChecked = selectedIds.has(t.trace_id);
                 const isTimeout = t.status === "Timeout";
                 const isError = t.status === "Error" || t.error_count > 0;
                 const isOk = !isTimeout && !isError;
@@ -191,11 +361,28 @@ export const RecentTracesTable: React.FC<RecentTracesTableProps> = ({
                     key={t.trace_id}
                     onClick={() => onSelectTrace(t.trace_id)}
                     className={`cursor-pointer transition-colors group ${
-                      isSelected
+                      isSelectedTrace
                         ? "bg-cyan-950/30 border-l-2 border-cyan-400"
+                        : isRowChecked
+                        ? "bg-cyan-950/15"
                         : "hover:bg-[#131F37]/60"
                     }`}
                   >
+                    {/* Row Checkbox */}
+                    <td
+                      className="py-3 pl-1 text-center"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={isRowChecked}
+                        onChange={() => toggleSelectOne(t.trace_id)}
+                        className="rounded border-[#1E293B] bg-[#070C19] text-cyan-500 focus:ring-cyan-500/30 cursor-pointer h-3.5 w-3.5"
+                      />
+                    </td>
+
                     {/* 1. Request / Query */}
                     <td className="py-3 pl-1 max-w-md pr-4">
                       <div className="flex flex-col gap-0.5">
@@ -267,6 +454,22 @@ export const RecentTracesTable: React.FC<RecentTracesTableProps> = ({
                     <td className="py-3 pr-2 text-right font-mono text-slate-400 text-[11px] whitespace-nowrap">
                       {timeStr}
                     </td>
+
+                    {/* 8. Action (Delete Single Button) */}
+                    <td
+                      className="py-3 text-center"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                      }}
+                    >
+                      <button
+                        onClick={() => promptDeleteSingle(t.trace_id, t.query)}
+                        className="rounded-lg p-1.5 text-slate-500 hover:bg-rose-950/40 hover:text-rose-400 transition-colors"
+                        title="Delete this request"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </td>
                   </tr>
                 );
               })
@@ -288,6 +491,73 @@ export const RecentTracesTable: React.FC<RecentTracesTableProps> = ({
             <span>View all {filtered.length} requests in full table</span>
             <ArrowRight className="h-3.5 w-3.5" />
           </button>
+        </div>
+      )}
+
+      {/* Delete Confirmation Modal */}
+      {confirmModal && confirmModal.isOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
+          onClick={() => {
+            if (!isDeleting) setConfirmModal(null);
+          }}
+        >
+          <div
+            className="w-full max-w-md rounded-2xl border border-[#1E293B] bg-[#0A101D] p-6 shadow-2xl space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start gap-3.5">
+              <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl bg-rose-500/20 text-rose-400 border border-rose-500/30">
+                <AlertTriangle className="h-5 w-5" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <h3 className="text-base font-bold text-white">
+                  Delete {confirmModal.ids.length === 1 ? "Request" : `${confirmModal.ids.length} Requests`}?
+                </h3>
+                <p className="mt-1 text-xs text-slate-400">
+                  Are you sure you want to delete{" "}
+                  <span className="text-slate-200 font-semibold font-mono truncate block mt-0.5">
+                    {confirmModal.displayTitle || "the selected request(s)"}
+                  </span>
+                </p>
+                <p className="mt-2 text-[11px] text-rose-300/80 bg-rose-950/30 border border-rose-800/40 rounded-lg p-2 font-medium">
+                  This permanently removes the request and all associated trace spans from the SQLite database.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-[#1E293B]">
+              <button
+                type="button"
+                disabled={isDeleting}
+                onClick={() => setConfirmModal(null)}
+                className="rounded-xl border border-[#1E293B] bg-[#0F172A] px-4 py-2 text-xs font-semibold text-slate-300 hover:text-white hover:border-slate-700 transition-colors"
+              >
+                Cancel
+              </button>
+
+              <button
+                type="button"
+                disabled={isDeleting}
+                onClick={executeDelete}
+                className="inline-flex items-center gap-1.5 rounded-xl bg-rose-600 px-4 py-2 text-xs font-semibold text-white hover:bg-rose-500 transition-all shadow-md shadow-rose-600/30 disabled:opacity-50"
+              >
+                {isDeleting ? (
+                  <>
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    <span>Deleting...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="h-3.5 w-3.5" />
+                    <span>
+                      Yes, Delete {confirmModal.ids.length > 1 ? `(${confirmModal.ids.length})` : ""}
+                    </span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

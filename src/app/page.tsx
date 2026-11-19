@@ -93,6 +93,14 @@ export default function MonitoringDashboard() {
     }
   };
 
+  const handleDeleteRequests = (deletedIds: string[]) => {
+    setTelemetry((prev) => ({
+      ...prev,
+      recentTraces: prev.recentTraces.filter((r) => !deletedIds.includes(r.trace_id)),
+    }));
+    loadData();
+  };
+
   const traces = telemetry.recentTraces;
   const componentStats = telemetry.componentStats;
   const slowestSpans = telemetry.slowestSpans;
@@ -201,6 +209,7 @@ export default function MonitoringDashboard() {
                     limit={10}
                     onViewAll={() => router.push("/requests")}
                     title="Recent Requests (Latest 10)"
+                    onDeleteRequests={handleDeleteRequests}
                   />
                 </div>
               </div>
@@ -240,6 +249,7 @@ export default function MonitoringDashboard() {
                 onSelectTrace={handleSelectTrace}
                 isLoading={isLoading}
                 scrollable={true}
+                onDeleteRequests={handleDeleteRequests}
               />
             </div>
           )}

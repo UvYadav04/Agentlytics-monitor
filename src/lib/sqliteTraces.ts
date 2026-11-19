@@ -603,3 +603,37 @@ export function queryTracesListFromDb(limit = 50, offset = 0, status?: string): 
     return null;
   }
 }
+
+/**
+ * Deletes all spans associated with the specified trace IDs or investigation IDs.
+ */
+export function deleteTracesFromDb(traceIds: string[]): { success: boolean; deletedCount: number } {
+  if (!traceIds || traceIds.length === 0) return { success: true, deletedCount: 0 };
+
+  const dbPath = resolveTracesDbPath();
+  if (!dbPath) return { success: false, deletedCount: 0 };
+
+  const DatabaseSync = getDatabaseSync();
+  if (!DatabaseSync) return { success: false, deletedCount: 0 };
+
+  try {
+    const db = new DatabaseSync(dbPath);
+    let totalDeleted = 0;
+    for (let i = 0; i < traceIds.length; i += 50) {
+      const chunk = traceIds.slice(i, i + 50);
+      const placeholders = chunk.map(() => "?").join(",");
+      const stmt = db.prepare(`
+        DELETE FROM spans
+        WHERE trace_id IN (${placeholders})
+           OR json_extract(tags_json, '$.investigation_id') IN (${placeholders})
+      `);
+      const res = stmt.run(...chunk, ...chunk) as any;
+      totalDeleted += res?.changes || 0;
+    }
+    db.close();
+    return { success: true, deletedCount: totalDeleted };
+  } catch (err) {
+    console.error("Failed to delete traces from db:", err);
+    return { success: false, deletedCount: 0 };
+  }
+}

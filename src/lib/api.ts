@@ -205,3 +205,40 @@ export async function fetchSlowestSpans(limit: number = 20): Promise<SpanRecord[
 
   return [];
 }
+
+export async function deleteTraces(traceIds: string[]): Promise<boolean> {
+  if (!traceIds || traceIds.length === 0) return true;
+
+  // 1. Try Next.js internal route
+  try {
+    const res = await fetch(`${INTERNAL_API}/traces`, {
+      method: "DELETE",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ trace_ids: traceIds }),
+    });
+    if (res.ok) {
+      return true;
+    }
+  } catch {}
+
+  // 2. Try FastAPI backend route
+  try {
+    const res = await fetch(`${EXTERNAL_API}/monitoring/traces/bulk-delete`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ trace_ids: traceIds }),
+    });
+    if (res.ok) {
+      return true;
+    }
+  } catch {}
+
+  return false;
+}
+
+export async function deleteSingleTrace(traceId: string): Promise<boolean> {
+  return deleteTraces([traceId]);
+}
+
