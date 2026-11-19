@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
-import { Filter, Layers, Search, Sparkles, Terminal } from "lucide-react";
+import { ArrowRight, Filter, Layers, Search, Sparkles, Terminal } from "lucide-react";
 import type { TraceSummary } from "@/lib/types";
 import { formatDuration } from "@/lib/formatters";
 
@@ -10,6 +10,10 @@ interface RecentTracesTableProps {
   selectedTraceId: string | null;
   onSelectTrace: (traceId: string) => void;
   isLoading?: boolean;
+  limit?: number;
+  onViewAll?: () => void;
+  scrollable?: boolean;
+  title?: string;
 }
 
 export const RecentTracesTable: React.FC<RecentTracesTableProps> = ({
@@ -17,6 +21,10 @@ export const RecentTracesTable: React.FC<RecentTracesTableProps> = ({
   selectedTraceId,
   onSelectTrace,
   isLoading = false,
+  limit,
+  onViewAll,
+  scrollable = false,
+  title = "Recent Requests",
 }) => {
   const [search, setSearch] = useState("");
   const [filterStatus, setFilterStatus] = useState<string>("all");
@@ -28,7 +36,8 @@ export const RecentTracesTable: React.FC<RecentTracesTableProps> = ({
       t.trace_id.toLowerCase().includes(q) ||
       (t.intent && t.intent.toLowerCase().includes(q)) ||
       (t.route && t.route.toLowerCase().includes(q)) ||
-      (t.query && t.query.toLowerCase().includes(q));
+      (t.query && t.query.toLowerCase().includes(q)) ||
+      (t.user_id && t.user_id.toLowerCase().includes(q));
 
     let matchesFilter = true;
     if (filterStatus === "ok") {
@@ -42,15 +51,19 @@ export const RecentTracesTable: React.FC<RecentTracesTableProps> = ({
     return matchesSearch && matchesFilter;
   });
 
+  const displayTraces = limit ? filtered.slice(0, limit) : filtered;
+
   return (
     <div className="flex h-full flex-col justify-between rounded-xl border border-[#1E293B] bg-[#0F172A] p-5 shadow-card">
       {/* Header with Title and Search/Filter Controls */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between pb-3 border-b border-[#1E293B]">
         <div>
           <div className="flex items-center gap-2">
-            <h3 className="text-sm font-semibold text-white">Recent Requests</h3>
+            <h3 className="text-sm font-semibold text-white">{title}</h3>
             <span className="rounded-full bg-cyan-950/80 border border-cyan-800/50 px-2 py-0.5 text-[10px] font-medium text-cyan-300">
-              {traces.length} {traces.length === 1 ? "request" : "requests"}
+              {limit && traces.length > limit
+                ? `Showing ${displayTraces.length} of ${traces.length}`
+                : `${traces.length} ${traces.length === 1 ? "request" : "requests"}`}
             </span>
           </div>
           <p className="text-xs text-slate-400 mt-0.5">Click a request to inspect its multi-step execution path</p>
@@ -81,6 +94,17 @@ export const RecentTracesTable: React.FC<RecentTracesTableProps> = ({
           >
             <Filter className="h-3.5 w-3.5" />
           </button>
+
+          {/* View All Button if in limited homepage mode */}
+          {onViewAll && limit && traces.length > limit && (
+            <button
+              onClick={onViewAll}
+              className="hidden sm:inline-flex items-center gap-1 text-xs text-cyan-400 hover:text-cyan-300 font-medium ml-1"
+            >
+              <span>View all</span>
+              <ArrowRight className="h-3.5 w-3.5" />
+            </button>
+          )}
         </div>
       </div>
 
@@ -104,18 +128,18 @@ export const RecentTracesTable: React.FC<RecentTracesTableProps> = ({
         </div>
       )}
 
-      {/* Table */}
-      <div className="mt-2 flex-1 overflow-x-auto">
+      {/* Table Container */}
+      <div className={`mt-2 flex-1 overflow-x-auto ${scrollable ? "max-h-[640px] overflow-y-auto" : ""}`}>
         <table className="w-full text-left text-xs">
-          <thead>
+          <thead className={scrollable ? "sticky top-0 bg-[#0F172A] z-10 shadow-sm" : ""}>
             <tr className="border-b border-[#1E293B] text-[11px] font-medium text-slate-400">
-              <th className="pb-2.5 font-medium pl-1">Request / Query</th>
-              <th className="pb-2.5 font-medium">Steps</th>
-              <th className="pb-2.5 font-medium">Intent / Route</th>
-              <th className="pb-2.5 font-medium">Latency</th>
-              <th className="pb-2.5 font-medium">Tokens</th>
-              <th className="pb-2.5 font-medium">Status</th>
-              <th className="pb-2.5 font-medium text-right pr-2">Time ↓</th>
+              <th className="pb-2.5 pt-1 font-medium pl-1">Request / Query</th>
+              <th className="pb-2.5 pt-1 font-medium">Steps</th>
+              <th className="pb-2.5 pt-1 font-medium">Intent / Route</th>
+              <th className="pb-2.5 pt-1 font-medium">Latency</th>
+              <th className="pb-2.5 pt-1 font-medium">Tokens</th>
+              <th className="pb-2.5 pt-1 font-medium">Status</th>
+              <th className="pb-2.5 pt-1 font-medium text-right pr-2">Time ↓</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-[#1E293B]/40">
@@ -125,7 +149,7 @@ export const RecentTracesTable: React.FC<RecentTracesTableProps> = ({
                   Loading requests...
                 </td>
               </tr>
-            ) : filtered.length === 0 ? (
+            ) : displayTraces.length === 0 ? (
               <tr>
                 <td colSpan={7} className="py-8 text-center text-slate-500">
                   {traces.length === 0
@@ -134,7 +158,7 @@ export const RecentTracesTable: React.FC<RecentTracesTableProps> = ({
                 </td>
               </tr>
             ) : (
-              filtered.map((t) => {
+              displayTraces.map((t) => {
                 const isSelected = selectedTraceId === t.trace_id;
                 const isTimeout = t.status === "Timeout";
                 const isError = t.status === "Error" || t.error_count > 0;
@@ -248,6 +272,22 @@ export const RecentTracesTable: React.FC<RecentTracesTableProps> = ({
           </tbody>
         </table>
       </div>
+
+      {/* Footer View All Link if limited on homepage */}
+      {onViewAll && limit && filtered.length > limit && (
+        <div className="pt-3 border-t border-[#1E293B] mt-2 flex items-center justify-between text-xs">
+          <span className="text-slate-500 text-[11px]">
+            Showing latest {limit} requests
+          </span>
+          <button
+            onClick={onViewAll}
+            className="inline-flex items-center gap-1 text-cyan-400 hover:text-cyan-300 font-medium transition-colors"
+          >
+            <span>View all {filtered.length} requests in full table</span>
+            <ArrowRight className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
     </div>
   );
 };

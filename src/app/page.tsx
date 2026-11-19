@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   AlertTriangle,
   BarChart3,
@@ -29,6 +30,7 @@ import { emptyTelemetryData } from "@/lib/emptyTelemetry";
 import type { DashboardTelemetry, SpanRecord, TraceSummary, TraceTree } from "@/lib/types";
 
 export default function MonitoringDashboard() {
+  const router = useRouter();
   const [activeNav, setActiveNav] = useState<string>("overview");
   const [timeRange, setTimeRange] = useState<string>("All Time (Recorded Traces)");
   const [refreshInterval, setRefreshInterval] = useState<number>(30000);
@@ -39,6 +41,16 @@ export default function MonitoringDashboard() {
   const [selectedTraceTree, setSelectedTraceTree] = useState<TraceTree | null>(null);
   const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
+
+  const handleSelectNav = (nav: string) => {
+    if (nav === "requests") {
+      router.push("/requests");
+    } else if (nav === "bottlenecks") {
+      router.push("/bottlenecks");
+    } else {
+      setActiveNav(nav);
+    }
+  };
 
   // Load telemetry traces & stats
   const loadData = async () => {
@@ -95,7 +107,7 @@ export default function MonitoringDashboard() {
   return (
     <div className="min-h-screen bg-[#070C19] text-slate-100 flex">
       {/* 1. Left Sidebar */}
-      <Sidebar activeNav={activeNav} onSelectNav={setActiveNav} />
+      <Sidebar activeNav={activeNav} onSelectNav={handleSelectNav} />
 
       {/* 2. Main Dashboard Area (offset by sidebar width: 240px / 15rem) */}
       <div className="flex-1 pl-60 flex flex-col min-w-0">
@@ -137,12 +149,20 @@ export default function MonitoringDashboard() {
                 Overview
               </button>
               <button
-                onClick={() => setActiveNav("requests")}
+                onClick={() => router.push("/requests")}
                 className={`px-3 py-1 rounded-lg transition-all font-medium ${
                   activeNav === "requests" ? "bg-cyan-500/20 text-cyan-300 font-semibold" : "text-slate-400 hover:text-white"
                 }`}
               >
-                Traces
+                Requests
+              </button>
+              <button
+                onClick={() => router.push("/bottlenecks")}
+                className={`px-3 py-1 rounded-lg transition-all font-medium ${
+                  activeNav === "bottlenecks" ? "bg-amber-500/20 text-amber-300 font-semibold" : "text-slate-400 hover:text-white"
+                }`}
+              >
+                Bottlenecks
               </button>
               <button
                 onClick={() => setActiveNav("services")}
@@ -178,13 +198,21 @@ export default function MonitoringDashboard() {
                     selectedTraceId={selectedTraceId}
                     onSelectTrace={handleSelectTrace}
                     isLoading={isLoading}
+                    limit={10}
+                    onViewAll={() => router.push("/requests")}
+                    title="Recent Requests (Latest 10)"
                   />
                 </div>
               </div>
 
               {/* Row 4: Bottlenecks Table */}
               <div className="mt-6">
-                <BottlenecksTable slowestSpans={slowestSpans} onSelectTrace={handleSelectTrace} />
+                <BottlenecksTable
+                  slowestSpans={slowestSpans}
+                  onSelectTrace={handleSelectTrace}
+                  limit={5}
+                  onViewAll={() => router.push("/bottlenecks")}
+                />
               </div>
             </>
           )}
@@ -198,10 +226,12 @@ export default function MonitoringDashboard() {
                     Click any request to open the chronological execution path with full token metrics, collapsed steps, and markdown inputs/outputs
                   </p>
                 </div>
-                <div className="flex items-center gap-2">
-                  <span className="font-mono text-cyan-400 font-semibold">{telemetry.metrics.totalTraces}</span>
-                  <span className="text-slate-500">recorded requests</span>
-                </div>
+                <button
+                  onClick={() => router.push("/requests")}
+                  className="px-3 py-1.5 rounded-lg bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 text-xs font-semibold hover:bg-cyan-500/30 transition-colors"
+                >
+                  Open Dedicated Requests Page →
+                </button>
               </div>
 
               <RecentTracesTable
@@ -209,6 +239,32 @@ export default function MonitoringDashboard() {
                 selectedTraceId={selectedTraceId}
                 onSelectTrace={handleSelectTrace}
                 isLoading={isLoading}
+                scrollable={true}
+              />
+            </div>
+          )}
+
+          {activeNav === "bottlenecks" && (
+            <div className="space-y-4">
+              <div className="rounded-xl border border-[#1E293B] bg-[#0F172A] p-4 text-xs text-slate-300 flex items-center justify-between">
+                <div>
+                  <h2 className="text-sm font-semibold text-white">Top Execution Bottlenecks</h2>
+                  <p className="text-slate-400 mt-0.5">
+                    Operations causing highest latency across all multi-agent investigations and tool calls
+                  </p>
+                </div>
+                <button
+                  onClick={() => router.push("/bottlenecks")}
+                  className="px-3 py-1.5 rounded-lg bg-amber-500/20 text-amber-300 border border-amber-500/30 text-xs font-semibold hover:bg-amber-500/30 transition-colors"
+                >
+                  Open Dedicated Bottlenecks Page →
+                </button>
+              </div>
+
+              <BottlenecksTable
+                slowestSpans={slowestSpans}
+                onSelectTrace={handleSelectTrace}
+                scrollable={true}
               />
             </div>
           )}

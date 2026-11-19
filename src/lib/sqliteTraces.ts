@@ -114,7 +114,7 @@ export function queryDashboardOverviewFromDb(): DashboardTelemetry | null {
   try {
     const db = new DatabaseSync(dbPath, { readOnly: true });
 
-    // 1. Durations, error counts, days grouped by request (investigation_id or trace_id)
+    // 1. Durations, error counts, days grouped by user request (investigation_id or multi-step request)
     const traceQuery = `
       SELECT
         COALESCE(json_extract(t.tags_json, '$.investigation_id'), t.trace_id) as request_id,
@@ -123,6 +123,16 @@ export function queryDashboardOverviewFromDb(): DashboardTelemetry | null {
         substr(MIN(t.created_at), 1, 10) as day
       FROM spans t
       GROUP BY request_id
+      HAVING 
+        NOT (
+          COUNT(*) = 1 AND (
+            (SELECT s.step_type FROM spans s WHERE s.trace_id = t.trace_id LIMIT 1) IN ('llm', 'tool', 'database', 'retriever', 'reranker', 'router')
+            OR (SELECT s.step_name FROM spans s WHERE s.trace_id = t.trace_id LIMIT 1) LIKE 'deepinfra%'
+            OR (SELECT s.step_name FROM spans s WHERE s.trace_id = t.trace_id LIMIT 1) LIKE 'openai%'
+            OR (SELECT s.step_name FROM spans s WHERE s.trace_id = t.trace_id LIMIT 1) LIKE 'execute_%'
+            OR (SELECT s.step_name FROM spans s WHERE s.trace_id = t.trace_id LIMIT 1) LIKE 'inspect_%'
+          )
+        )
     `;
     const traceRows = db.prepare(traceQuery).all() as any[];
     const totalTraces = traceRows.length;
@@ -260,7 +270,7 @@ export function queryDashboardOverviewFromDb(): DashboardTelemetry | null {
     const slowestRows = db.prepare(slowestQuery).all() as any[];
     const slowestSpans = slowestRows.map(rowToSpan);
 
-    // 6. Recent requests (grouped by investigation_id or trace_id)
+    // 6. Recent requests (strictly USER REQUESTS only, excluding raw internal steps)
     const recentQuery = `
       SELECT
         COALESCE(json_extract(t.tags_json, '$.investigation_id'), t.trace_id) as request_id,
@@ -279,78 +289,100 @@ export function queryDashboardOverviewFromDb(): DashboardTelemetry | null {
         (SELECT s.tags_json FROM spans s WHERE (s.trace_id = t.trace_id OR json_extract(s.tags_json, '$.investigation_id') = COALESCE(json_extract(t.tags_json, '$.investigation_id'), t.trace_id)) AND (s.tags_json LIKE '%"query"%' OR s.tags_json LIKE '%"objective"%') ORDER BY s.start_time ASC LIMIT 1) as query_tags
       FROM spans t
       GROUP BY request_id
+      HAVING 
+        NOT (
+          COUNT(*) = 1 AND (
+            (SELECT s.step_type FROM spans s WHERE s.trace_id = t.trace_id LIMIT 1) IN ('llm', 'tool', 'database', 'retriever', 'reranker', 'router')
+            OR (SELECT s.step_name FROM spans s WHERE s.trace_id = t.trace_id LIMIT 1) LIKE 'deepinfra%'
+            OR (SELECT s.step_name FROM spans s WHERE s.trace_id = t.trace_id LIMIT 1) LIKE 'openai%'
+            OR (SELECT s.step_name FROM spans s WHERE s.trace_id = t.trace_id LIMIT 1) LIKE 'execute_%'
+            OR (SELECT s.step_name FROM spans s WHERE s.trace_id = t.trace_id LIMIT 1) LIKE 'inspect_%'
+          )
+        )
       ORDER BY start_time DESC
-      LIMIT 50
+      LIMIT 100
     `;
     const recentRows = db.prepare(recentQuery).all() as any[];
-    const recentTraces: TraceSummary[] = recentRows.map((d) => {
-      const stepName = d.root_step_name || "";
-      const component = d.root_component || "";
-      const queryInputs = parseJsonSafe(d.query_inputs, {});
-      const queryTags = parseJsonSafe(d.query_tags, {});
+    const recentTraces: TraceSummary[] = recentRows
+      .map((d) => {
+        const stepName = d.root_step_name || "";
+        const component = d.root_component || "";
+        const queryInputs = parseJsonSafe(d.query_inputs, {});
+        const queryTags = parseJsonSafe(d.query_tags, {});
 
-      let q =
-        queryInputs?.objective ||
-        queryInputs?.query ||
-        queryInputs?.question ||
-        queryInputs?.prompt ||
-        queryTags?.query ||
-        queryTags?.objective ||
-        "";
+        let q =
+          queryInputs?.objective ||
+          queryInputs?.query ||
+          queryInputs?.question ||
+          queryInputs?.prompt ||
+          queryTags?.query ||
+          queryTags?.objective ||
+          "";
 
-      if (!q && queryInputs?.messages && Array.isArray(queryInputs.messages)) {
-        const lastMsg = queryInputs.messages[queryInputs.messages.length - 1];
-        q = typeof lastMsg === "object" ? lastMsg.content || "" : String(lastMsg);
-      }
-      if (!q) {
-        q = "Execution of " + (stepName || component || "Data Query");
-      }
+        if (!q && queryInputs?.messages && Array.isArray(queryInputs.messages)) {
+          const lastMsg = queryInputs.messages[queryInputs.messages.length - 1];
+          q = typeof lastMsg === "object" ? lastMsg.content || "" : String(lastMsg);
+        }
+        if (!q) {
+          q = "Execution of " + (stepName || component || "Data Query");
+        }
 
-      let intent = "Data Investigation";
-      let route = "orchestrator";
-      const fullText = (stepName + " " + component + " " + (d.request_id || "")).toLowerCase();
-      if (fullText.includes("tabular") || fullText.includes("duckdb")) {
-        intent = "Tabular Analysis";
-        route = "agent.tabular";
-      } else if (fullText.includes("database") || fullText.includes("sql")) {
-        intent = "SQL Query Execution";
-        route = "agent.database";
-      } else if (fullText.includes("document") || fullText.includes("rag")) {
-        intent = "Document RAG";
-        route = "agent.document";
-      } else if (fullText.includes("light")) {
-        intent = "Direct Assistant";
-        route = "light.reply";
-      }
+        // Filter out non-user internal executions
+        if (
+          q.startsWith("Execution of deepinfra") ||
+          q.startsWith("Execution of openai") ||
+          q.startsWith("Execution of execute_") ||
+          q.startsWith("Execution of inspect_")
+        ) {
+          return null;
+        }
 
-      const totalTokensTrace =
-        Number(d.total_tokens) || Number(d.total_prompt_tokens || 0) + Number(d.total_completion_tokens || 0);
+        let intent = "Data Investigation";
+        let route = "orchestrator";
+        const fullText = (stepName + " " + component + " " + (d.request_id || "")).toLowerCase();
+        if (fullText.includes("tabular") || fullText.includes("duckdb")) {
+          intent = "Tabular Analysis";
+          route = "agent.tabular";
+        } else if (fullText.includes("database") || fullText.includes("sql")) {
+          intent = "SQL Query Execution";
+          route = "agent.database";
+        } else if (fullText.includes("document") || fullText.includes("rag")) {
+          intent = "Document RAG";
+          route = "agent.document";
+        } else if (fullText.includes("light")) {
+          intent = "Direct Assistant";
+          route = "light.reply";
+        }
 
-      const durMs = Number(d.total_duration_ms || 0);
-      const isErr = Number(d.error_count || 0) > 0;
-      const isTimeout = durMs > 30000;
-      const status = isErr ? "Error" : isTimeout ? "Timeout" : "OK";
+        const totalTokensTrace =
+          Number(d.total_tokens) || Number(d.total_prompt_tokens || 0) + Number(d.total_completion_tokens || 0);
 
-      return {
-        trace_id: d.request_id || d.trace_id,
-        user_id: queryTags?.user_id || "usr_prod",
-        workspace_id: queryTags?.workspace_id || "ws_prod",
-        intent,
-        route,
-        status,
-        error_count: Number(d.error_count || 0),
-        total_duration_ms: durMs,
-        latency_s: Number((durMs / 1000).toFixed(2)),
-        total_spans: Number(d.total_spans || 1),
-        total_prompt_tokens: Number(d.total_prompt_tokens || 0),
-        total_completion_tokens: Number(d.total_completion_tokens || 0),
-        total_tokens: totalTokensTrace,
-        start_time: Number(d.start_time || 0),
-        end_time: Number(d.end_time || 0),
-        created_at: d.created_at || new Date().toISOString(),
-        query: q,
-      };
-    });
+        const durMs = Number(d.total_duration_ms || 0);
+        const isErr = Number(d.error_count || 0) > 0;
+        const isTimeout = durMs > 30000;
+        const status = isErr ? "Error" : isTimeout ? "Timeout" : "OK";
+
+        return {
+          trace_id: d.request_id || d.trace_id,
+          user_id: queryTags?.user_id || "usr_prod",
+          workspace_id: queryTags?.workspace_id || "ws_prod",
+          intent,
+          route,
+          status,
+          error_count: Number(d.error_count || 0),
+          total_duration_ms: durMs,
+          latency_s: Number((durMs / 1000).toFixed(2)),
+          total_spans: Number(d.total_spans || 1),
+          total_prompt_tokens: Number(d.total_prompt_tokens || 0),
+          total_completion_tokens: Number(d.total_completion_tokens || 0),
+          total_tokens: totalTokensTrace,
+          start_time: Number(d.start_time || 0),
+          end_time: Number(d.end_time || 0),
+          created_at: d.created_at || new Date().toISOString(),
+          query: q,
+        } as TraceSummary;
+      })
+      .filter((t): t is TraceSummary => t !== null);
 
     db.close();
 
@@ -438,12 +470,12 @@ export function queryTracesListFromDb(limit = 50, offset = 0, status?: string): 
 
   try {
     const db = new DatabaseSync(dbPath, { readOnly: true });
-    let havingClause = "";
+    let havingStatus = "";
     if (status) {
       if (status.toLowerCase() === "ok" || status.toLowerCase() === "success") {
-        havingClause = "HAVING error_count = 0";
+        havingStatus = "AND error_count = 0";
       } else if (status.toLowerCase() === "error" || status.toLowerCase() === "failed") {
-        havingClause = "HAVING error_count > 0";
+        havingStatus = "AND error_count > 0";
       }
     }
 
@@ -465,7 +497,17 @@ export function queryTracesListFromDb(limit = 50, offset = 0, status?: string): 
         (SELECT s.tags_json FROM spans s WHERE (s.trace_id = t.trace_id OR json_extract(s.tags_json, '$.investigation_id') = COALESCE(json_extract(t.tags_json, '$.investigation_id'), t.trace_id)) AND (s.tags_json LIKE '%"query"%' OR s.tags_json LIKE '%"objective"%') ORDER BY s.start_time ASC LIMIT 1) as query_tags
       FROM spans t
       GROUP BY request_id
-      ${havingClause}
+      HAVING 
+        NOT (
+          COUNT(*) = 1 AND (
+            (SELECT s.step_type FROM spans s WHERE s.trace_id = t.trace_id LIMIT 1) IN ('llm', 'tool', 'database', 'retriever', 'reranker', 'router')
+            OR (SELECT s.step_name FROM spans s WHERE s.trace_id = t.trace_id LIMIT 1) LIKE 'deepinfra%'
+            OR (SELECT s.step_name FROM spans s WHERE s.trace_id = t.trace_id LIMIT 1) LIKE 'openai%'
+            OR (SELECT s.step_name FROM spans s WHERE s.trace_id = t.trace_id LIMIT 1) LIKE 'execute_%'
+            OR (SELECT s.step_name FROM spans s WHERE s.trace_id = t.trace_id LIMIT 1) LIKE 'inspect_%'
+          )
+        )
+        ${havingStatus}
       ORDER BY start_time DESC
       LIMIT ? OFFSET ?
     `;
@@ -473,74 +515,85 @@ export function queryTracesListFromDb(limit = 50, offset = 0, status?: string): 
     const rows = db.prepare(query).all(limit, offset) as any[];
     db.close();
 
-    return rows.map((d) => {
-      const stepName = d.root_step_name || "";
-      const component = d.root_component || "";
-      const queryInputs = parseJsonSafe(d.query_inputs, {});
-      const queryTags = parseJsonSafe(d.query_tags, {});
+    return rows
+      .map((d) => {
+        const stepName = d.root_step_name || "";
+        const component = d.root_component || "";
+        const queryInputs = parseJsonSafe(d.query_inputs, {});
+        const queryTags = parseJsonSafe(d.query_tags, {});
 
-      let q =
-        queryInputs?.objective ||
-        queryInputs?.query ||
-        queryInputs?.question ||
-        queryInputs?.prompt ||
-        queryTags?.query ||
-        queryTags?.objective ||
-        "";
+        let q =
+          queryInputs?.objective ||
+          queryInputs?.query ||
+          queryInputs?.question ||
+          queryInputs?.prompt ||
+          queryTags?.query ||
+          queryTags?.objective ||
+          "";
 
-      if (!q && queryInputs?.messages && Array.isArray(queryInputs.messages)) {
-        const lastMsg = queryInputs.messages[queryInputs.messages.length - 1];
-        q = typeof lastMsg === "object" ? lastMsg.content || "" : String(lastMsg);
-      }
-      if (!q) {
-        q = "Execution of " + (stepName || component || "Data Query");
-      }
+        if (!q && queryInputs?.messages && Array.isArray(queryInputs.messages)) {
+          const lastMsg = queryInputs.messages[queryInputs.messages.length - 1];
+          q = typeof lastMsg === "object" ? lastMsg.content || "" : String(lastMsg);
+        }
+        if (!q) {
+          q = "Execution of " + (stepName || component || "Data Query");
+        }
 
-      let intent = "Data Investigation";
-      let route = "orchestrator";
-      const fullText = (stepName + " " + component + " " + (d.request_id || "")).toLowerCase();
-      if (fullText.includes("tabular") || fullText.includes("duckdb")) {
-        intent = "Tabular Analysis";
-        route = "agent.tabular";
-      } else if (fullText.includes("database") || fullText.includes("sql")) {
-        intent = "SQL Query Execution";
-        route = "agent.database";
-      } else if (fullText.includes("document") || fullText.includes("rag")) {
-        intent = "Document RAG";
-        route = "agent.document";
-      } else if (fullText.includes("light")) {
-        intent = "Direct Assistant";
-        route = "light.reply";
-      }
+        if (
+          q.startsWith("Execution of deepinfra") ||
+          q.startsWith("Execution of openai") ||
+          q.startsWith("Execution of execute_") ||
+          q.startsWith("Execution of inspect_")
+        ) {
+          return null;
+        }
 
-      const totalTokensTrace =
-        Number(d.total_tokens) || Number(d.total_prompt_tokens || 0) + Number(d.total_completion_tokens || 0);
+        let intent = "Data Investigation";
+        let route = "orchestrator";
+        const fullText = (stepName + " " + component + " " + (d.request_id || "")).toLowerCase();
+        if (fullText.includes("tabular") || fullText.includes("duckdb")) {
+          intent = "Tabular Analysis";
+          route = "agent.tabular";
+        } else if (fullText.includes("database") || fullText.includes("sql")) {
+          intent = "SQL Query Execution";
+          route = "agent.database";
+        } else if (fullText.includes("document") || fullText.includes("rag")) {
+          intent = "Document RAG";
+          route = "agent.document";
+        } else if (fullText.includes("light")) {
+          intent = "Direct Assistant";
+          route = "light.reply";
+        }
 
-      const durMs = Number(d.total_duration_ms || 0);
-      const isErr = Number(d.error_count || 0) > 0;
-      const isTimeout = durMs > 30000;
-      const status = isErr ? "Error" : isTimeout ? "Timeout" : "OK";
+        const totalTokensTrace =
+          Number(d.total_tokens) || Number(d.total_prompt_tokens || 0) + Number(d.total_completion_tokens || 0);
 
-      return {
-        trace_id: d.request_id || d.trace_id,
-        user_id: queryTags?.user_id || "usr_prod",
-        workspace_id: queryTags?.workspace_id || "ws_prod",
-        intent,
-        route,
-        status,
-        error_count: Number(d.error_count || 0),
-        total_duration_ms: durMs,
-        latency_s: Number((durMs / 1000).toFixed(2)),
-        total_spans: Number(d.total_spans || 1),
-        total_prompt_tokens: Number(d.total_prompt_tokens || 0),
-        total_completion_tokens: Number(d.total_completion_tokens || 0),
-        total_tokens: totalTokensTrace,
-        start_time: Number(d.start_time || 0),
-        end_time: Number(d.end_time || 0),
-        created_at: d.created_at || new Date().toISOString(),
-        query: q,
-      };
-    });
+        const durMs = Number(d.total_duration_ms || 0);
+        const isErr = Number(d.error_count || 0) > 0;
+        const isTimeout = durMs > 30000;
+        const status = isErr ? "Error" : isTimeout ? "Timeout" : "OK";
+
+        return {
+          trace_id: d.request_id || d.trace_id,
+          user_id: queryTags?.user_id || "usr_prod",
+          workspace_id: queryTags?.workspace_id || "ws_prod",
+          intent,
+          route,
+          status,
+          error_count: Number(d.error_count || 0),
+          total_duration_ms: durMs,
+          latency_s: Number((durMs / 1000).toFixed(2)),
+          total_spans: Number(d.total_spans || 1),
+          total_prompt_tokens: Number(d.total_prompt_tokens || 0),
+          total_completion_tokens: Number(d.total_completion_tokens || 0),
+          total_tokens: totalTokensTrace,
+          start_time: Number(d.start_time || 0),
+          end_time: Number(d.end_time || 0),
+          created_at: d.created_at || new Date().toISOString(),
+          query: q,
+        } as TraceSummary;
+      })
+      .filter((t): t is TraceSummary => t !== null);
   } catch (err) {
     console.error("Failed to query traces list from DB:", err);
     return null;

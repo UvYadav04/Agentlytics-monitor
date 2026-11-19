@@ -13,6 +13,7 @@ import {
   Search,
   Settings,
   User,
+  Zap,
 } from "lucide-react";
 
 interface SidebarProps {
@@ -24,6 +25,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeNav, onSelectNav }) => {
   const navItems = [
     { id: "overview", label: "Overview", icon: LayoutDashboard },
     { id: "requests", label: "Requests", icon: Layers },
+    { id: "bottlenecks", label: "Bottlenecks", icon: Zap },
     { id: "models", label: "Models", icon: Cpu },
     { id: "retrieval", label: "Retrieval", icon: Search },
     { id: "services", label: "Services", icon: Database },
