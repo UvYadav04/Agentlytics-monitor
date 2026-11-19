@@ -9,12 +9,17 @@ services:
     image: itzdineshyadav/data-analyzer:monitoring
     container_name: data-analyzer-monitoring
     restart: unless-stopped
+    user: "0:0"
     ports:
       - "3001:3001"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       - MONITORING_TRACES_DIR=/app/traces
       - MONITORING_DB_PATH=/app/traces/traces.db
+      - API_URL=${API_URL:-http://host.docker.internal:8000/api}
     volumes:
-      - ./traces:/app/traces:ro
-      - ../Server/traces:/app/traces-host:ro
+      - ../Server/traces:/app/traces
+      - ../Server/traces:/app/traces-host
+      - ./traces:/app/traces-fallback
 

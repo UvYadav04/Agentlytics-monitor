@@ -34,7 +34,8 @@ COPY --from=builder /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 
-USER nextjs
+# Runs container with write access to the shared host SQLite traces volume
+# USER nextjs
 EXPOSE 3001
 
 CMD ["node", "server.js"]

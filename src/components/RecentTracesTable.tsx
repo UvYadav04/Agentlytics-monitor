@@ -145,7 +145,12 @@ export const RecentTracesTable: React.FC<RecentTracesTableProps> = ({
     const idsToDelete = confirmModal.ids;
 
     try {
-      await deleteTraces(idsToDelete);
+      const success = await deleteTraces(idsToDelete);
+      if (!success) {
+        setDeleteToast("Failed to delete request(s). Check storage permissions.");
+        setTimeout(() => setDeleteToast(null), 4000);
+        return;
+      }
 
       if (onDeleteRequests) {
         await onDeleteRequests(idsToDelete);
@@ -163,6 +168,8 @@ export const RecentTracesTable: React.FC<RecentTracesTableProps> = ({
       setTimeout(() => setDeleteToast(null), 3000);
     } catch (err) {
       console.error("Failed to delete requests:", err);
+      setDeleteToast("Error deleting request(s).");
+      setTimeout(() => setDeleteToast(null), 4000);
     } finally {
       setIsDeleting(false);
       setConfirmModal(null);

@@ -78,25 +78,44 @@ export async function DELETE(request: NextRequest) {
     const dbResult = deleteTracesFromDb(traceIds);
 
     // 2. Also proxy to backend API if configured
+    let backendSuccess = false;
+    let backendDeletedSpans = 0;
     const apiBase = (process.env.API_URL || process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api").replace(/\/$/, "");
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 2500);
-      await fetch(`${apiBase}/monitoring/traces/bulk-delete`, {
+      const res = await fetch(`${apiBase}/monitoring/traces/bulk-delete`, {
         method: "POST",
         signal: controller.signal,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ trace_ids: traceIds }),
       });
       clearTimeout(timeoutId);
+      if (res.ok) {
+        backendSuccess = true;
+        const json = await res.json().catch(() => null);
+        if (json && typeof json.deleted_spans_count === "number") {
+          backendDeletedSpans = json.deleted_spans_count;
+        }
+      }
     } catch {
       // Backend offline or unreachable
+    }
+
+    if (!dbResult.success && !backendSuccess) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Failed to delete traces from SQLite storage and backend API was unreachable. Ensure traces volume is mounted read-write.",
+        },
+        { status: 500 }
+      );
     }
 
     return NextResponse.json({
       success: true,
       deleted_traces_count: traceIds.length,
-      deleted_spans_count: dbResult.deletedCount,
+      deleted_spans_count: Math.max(dbResult.deletedCount, backendDeletedSpans),
     });
   } catch (err: any) {
     return NextResponse.json({ error: err.message || "Failed to delete traces" }, { status: 500 });

@@ -218,7 +218,10 @@ export async function deleteTraces(traceIds: string[]): Promise<boolean> {
       body: JSON.stringify({ trace_ids: traceIds }),
     });
     if (res.ok) {
-      return true;
+      const data = await res.json().catch(() => null);
+      if (data && data.success) {
+        return true;
+      }
     }
   } catch {}
 
@@ -231,7 +234,10 @@ export async function deleteTraces(traceIds: string[]): Promise<boolean> {
       body: JSON.stringify({ trace_ids: traceIds }),
     });
     if (res.ok) {
-      return true;
+      const data = await res.json().catch(() => null);
+      if (data && data.success) {
+        return true;
+      }
     }
   } catch {}
 

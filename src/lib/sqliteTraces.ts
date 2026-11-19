@@ -33,9 +33,11 @@ export function resolveTracesDbPath(): string | null {
     "/app/traces-host/traces.db",
     "/app/traces-fallback/traces.db",
     path.resolve(process.cwd(), "../Server/traces/traces.db"),
+    path.resolve(process.cwd(), "../server/traces/traces.db"),
     path.resolve(process.cwd(), "traces/traces.db"),
     path.resolve(process.cwd(), "../traces/traces.db"),
     path.resolve(__dirname, "../../../Server/traces/traces.db"),
+    path.resolve(__dirname, "../../../server/traces/traces.db"),
   ];
 
   for (const p of candidates) {
@@ -611,13 +613,21 @@ export function deleteTracesFromDb(traceIds: string[]): { success: boolean; dele
   if (!traceIds || traceIds.length === 0) return { success: true, deletedCount: 0 };
 
   const dbPath = resolveTracesDbPath();
-  if (!dbPath) return { success: false, deletedCount: 0 };
+  if (!dbPath) {
+    console.error("deleteTracesFromDb failed: traces.db not found on any known path.");
+    return { success: false, deletedCount: 0 };
+  }
 
   const DatabaseSync = getDatabaseSync();
-  if (!DatabaseSync) return { success: false, deletedCount: 0 };
+  if (!DatabaseSync) {
+    console.error("deleteTracesFromDb failed: node:sqlite DatabaseSync not available.");
+    return { success: false, deletedCount: 0 };
+  }
 
   try {
     const db = new DatabaseSync(dbPath);
+    db.exec("PRAGMA busy_timeout = 5000;");
+
     let totalDeleted = 0;
     for (let i = 0; i < traceIds.length; i += 50) {
       const chunk = traceIds.slice(i, i + 50);
@@ -626,14 +636,37 @@ export function deleteTracesFromDb(traceIds: string[]): { success: boolean; dele
         DELETE FROM spans
         WHERE trace_id IN (${placeholders})
            OR json_extract(tags_json, '$.investigation_id') IN (${placeholders})
+           OR json_extract(tags_json, '$.request_id') IN (${placeholders})
       `);
-      const res = stmt.run(...chunk, ...chunk) as any;
+      const res = stmt.run(...chunk, ...chunk, ...chunk) as any;
       totalDeleted += res?.changes || 0;
     }
+
+    // Flush WAL changes if database is in WAL mode
+    try {
+      db.exec("PRAGMA wal_checkpoint(PASSIVE);");
+    } catch {}
+
     db.close();
+
+    // Clean up any exported investigation JSON files matching deleted traces
+    try {
+      const invDir = path.join(path.dirname(dbPath), "investigations");
+      if (fs.existsSync(invDir)) {
+        for (const tid of traceIds) {
+          const f = path.join(invDir, `${tid}.json`);
+          if (fs.existsSync(f)) {
+            try {
+              fs.unlinkSync(f);
+            } catch {}
+          }
+        }
+      }
+    } catch {}
+
     return { success: true, deletedCount: totalDeleted };
   } catch (err) {
-    console.error("Failed to delete traces from db:", err);
+    console.error(`Failed to delete traces from db at ${dbPath}:`, err);
     return { success: false, deletedCount: 0 };
   }
 }
