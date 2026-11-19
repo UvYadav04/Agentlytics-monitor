@@ -323,16 +323,20 @@ export function queryDashboardOverviewFromDb(): DashboardTelemetry | null {
           const lastMsg = queryInputs.messages[queryInputs.messages.length - 1];
           q = typeof lastMsg === "object" ? lastMsg.content || "" : String(lastMsg);
         }
+
+        // Strictly require a real user query: if empty or starts with "Execution of", it's an internal step
         if (!q) {
-          q = "Execution of " + (stepName || component || "Data Query");
+          return null;
         }
 
-        // Filter out non-user internal executions
+        const qLower = q.toLowerCase().trim();
         if (
-          q.startsWith("Execution of deepinfra") ||
-          q.startsWith("Execution of openai") ||
-          q.startsWith("Execution of execute_") ||
-          q.startsWith("Execution of inspect_")
+          qLower.startsWith("execution of") ||
+          qLower.startsWith("execute_") ||
+          qLower.startsWith("inspect_") ||
+          qLower.startsWith("list_") ||
+          qLower.startsWith("deepinfra") ||
+          qLower.startsWith("openai")
         ) {
           return null;
         }

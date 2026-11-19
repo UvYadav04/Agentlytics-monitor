@@ -66,6 +66,19 @@ export interface TraceSummary {
   time_display?: string;
 }
 
+/**
+ * Validates that a trace represents an actual user request rather than an
+ * unattached internal LLM or tool step (e.g. "Execution of deepinfra.create").
+ */
+export function isRealUserRequest(t: { query?: string; intent?: string; total_spans?: number }): boolean {
+  if (!t.query) return false;
+  const q = t.query.trim().toLowerCase();
+  if (q.startsWith("execution of")) return false;
+  if (q.startsWith("execute_") || q.startsWith("inspect_") || q.startsWith("list_")) return false;
+  if (q.includes("deepinfra") || q.includes("openai.create")) return false;
+  return true;
+}
+
 export interface TraceTree {
   trace_id: string;
   total_spans: number;

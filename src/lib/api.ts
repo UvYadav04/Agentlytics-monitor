@@ -1,4 +1,5 @@
 import { emptyTelemetryData } from "./emptyTelemetry";
+import { isRealUserRequest } from "./types";
 import type { ComponentStat, DashboardTelemetry, SpanRecord, TraceSummary, TraceTree } from "./types";
 
 const BASE_PATH = (process.env.NEXT_PUBLIC_BASE_PATH ?? "/monitoring").replace(/\/$/, "");
@@ -25,7 +26,7 @@ export async function fetchDashboardOverview(): Promise<DashboardTelemetry> {
           metrics: data.metrics,
           timeline: data.timeline || [],
           componentStats: data.componentStats || [],
-          recentTraces: data.recentTraces || [],
+          recentTraces: (data.recentTraces || []).filter(isRealUserRequest),
           slowestSpans: data.slowestSpans || [],
         };
       }
@@ -51,7 +52,7 @@ export async function fetchDashboardOverview(): Promise<DashboardTelemetry> {
           metrics: data.metrics,
           timeline: data.timeline || [],
           componentStats: data.componentStats || [],
-          recentTraces: data.recentTraces || [],
+          recentTraces: (data.recentTraces || []).filter(isRealUserRequest),
           slowestSpans: data.slowestSpans || [],
         };
       }
@@ -81,7 +82,7 @@ export async function fetchTraces(limit: number = 50, offset: number = 0, status
     if (res.ok) {
       const data = await res.json();
       if (data && Array.isArray(data.traces)) {
-        return data.traces;
+        return data.traces.filter(isRealUserRequest);
       }
     }
   } catch {}
@@ -101,7 +102,7 @@ export async function fetchTraces(limit: number = 50, offset: number = 0, status
     if (res.ok) {
       const data = await res.json();
       if (data && Array.isArray(data.traces)) {
-        return data.traces;
+        return data.traces.filter(isRealUserRequest);
       }
     }
   } catch {}

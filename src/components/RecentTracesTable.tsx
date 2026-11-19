@@ -2,7 +2,7 @@
 
 import React, { useState } from "react";
 import { ArrowRight, Filter, Layers, Search, Sparkles, Terminal } from "lucide-react";
-import type { TraceSummary } from "@/lib/types";
+import { isRealUserRequest, type TraceSummary } from "@/lib/types";
 import { formatDuration } from "@/lib/formatters";
 
 interface RecentTracesTableProps {
@@ -30,7 +30,9 @@ export const RecentTracesTable: React.FC<RecentTracesTableProps> = ({
   const [filterStatus, setFilterStatus] = useState<string>("all");
   const [showFilters, setShowFilters] = useState(false);
 
-  const filtered = traces.filter((t) => {
+  const userRequests = traces.filter(isRealUserRequest);
+
+  const filtered = userRequests.filter((t) => {
     const q = search.toLowerCase();
     const matchesSearch =
       t.trace_id.toLowerCase().includes(q) ||
@@ -61,9 +63,9 @@ export const RecentTracesTable: React.FC<RecentTracesTableProps> = ({
           <div className="flex items-center gap-2">
             <h3 className="text-sm font-semibold text-white">{title}</h3>
             <span className="rounded-full bg-cyan-950/80 border border-cyan-800/50 px-2 py-0.5 text-[10px] font-medium text-cyan-300">
-              {limit && traces.length > limit
-                ? `Showing ${displayTraces.length} of ${traces.length}`
-                : `${traces.length} ${traces.length === 1 ? "request" : "requests"}`}
+              {limit && userRequests.length > limit
+                ? `Showing ${displayTraces.length} of ${userRequests.length}`
+                : `${userRequests.length} ${userRequests.length === 1 ? "request" : "requests"}`}
             </span>
           </div>
           <p className="text-xs text-slate-400 mt-0.5">Click a request to inspect its multi-step execution path</p>
@@ -96,7 +98,7 @@ export const RecentTracesTable: React.FC<RecentTracesTableProps> = ({
           </button>
 
           {/* View All Button if in limited homepage mode */}
-          {onViewAll && limit && traces.length > limit && (
+          {onViewAll && limit && userRequests.length > limit && (
             <button
               onClick={onViewAll}
               className="hidden sm:inline-flex items-center gap-1 text-xs text-cyan-400 hover:text-cyan-300 font-medium ml-1"
