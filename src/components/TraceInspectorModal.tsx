@@ -4,6 +4,8 @@ import React, { useState } from "react";
 import {
   AlertOctagon,
   AlertTriangle,
+  ArrowDownRight,
+  Bug,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -13,6 +15,7 @@ import {
   Copy,
   Cpu,
   Database,
+  ExternalLink,
   FileText,
   Layers,
   Search,
@@ -21,6 +24,7 @@ import {
   X,
 } from "lucide-react";
 import { MarkdownViewer } from "@/components/MarkdownViewer";
+import { TracebackViewer } from "@/components/TracebackViewer";
 import { formatDuration, formatTokens, getStepTypeBadgeColor } from "@/lib/formatters";
 import { formatPayloadToMarkdown } from "@/lib/markdownFormatter";
 import type { SpanRecord, TraceTree } from "@/lib/types";
@@ -31,11 +35,13 @@ interface TraceInspectorModalProps {
 }
 
 export const TraceInspectorModal: React.FC<TraceInspectorModalProps> = ({ tree, onClose }) => {
-  const [viewMode, setViewMode] = useState<"flow" | "waterfall" | "raw">("flow");
+  const [viewMode, setViewMode] = useState<"flow" | "waterfall" | "raw" | "error">("flow");
   const [copiedTrace, setCopiedTrace] = useState(false);
   const [copiedSection, setCopiedSection] = useState<string | null>(null);
   // All steps start collapsed by default as requested
   const [expandedSpans, setExpandedSpans] = useState<Record<string, boolean>>({});
+  // Inline traceback collapsed by default to preserve maximum space for execution traces
+  const [showInlineTraceback, setShowInlineTraceback] = useState(false);
 
   if (!tree) return null;
 
@@ -88,7 +94,7 @@ export const TraceInspectorModal: React.FC<TraceInspectorModalProps> = ({ tree, 
     if (s.inputs?.user_id && !userId) userId = String(s.inputs.user_id);
   }
 
-// Query fallback
+  // Query fallback
   if (!queryText) {
     queryText = "Execution of data investigation pipeline";
   }
@@ -119,11 +125,22 @@ export const TraceInspectorModal: React.FC<TraceInspectorModalProps> = ({ tree, 
     setTimeout(() => setCopiedSection(null), 2000);
   };
 
+  const jumpToSpan = (spanId: string) => {
+    setViewMode("flow");
+    setExpandedSpans((prev) => ({ ...prev, [spanId]: true }));
+    setTimeout(() => {
+      const el = document.getElementById(`span-${spanId}`);
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+    }, 100);
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-3 sm:p-6 animate-in fade-in duration-200">
       <div className="flex h-full max-h-[94vh] w-full max-w-5xl flex-col rounded-2xl border border-slate-700/80 bg-[#0B1120] text-slate-100 shadow-2xl overflow-hidden">
         {/* 1. Modal Top Bar */}
-        <div className="flex items-center justify-between border-b border-[#1E293B] bg-[#0F172A] px-6 py-4">
+        <div className="flex items-center justify-between border-b border-[#1E293B] bg-[#0F172A] px-6 py-4 shrink-0">
           <div className="flex flex-wrap items-center gap-3">
             {/* Status Pill */}
             <span
@@ -187,10 +204,10 @@ export const TraceInspectorModal: React.FC<TraceInspectorModalProps> = ({ tree, 
           </button>
         </div>
 
-        {/* 2. Executive Metrics Strip & Prominent User Query at the Top */}
-        <div className="border-b border-[#1E293B] bg-[#0C1425] p-5 space-y-4">
+        {/* 2. Executive Metrics Strip & Prominent User Query at the Top (max-h constrained so traces below always have space) */}
+        <div className="border-b border-[#1E293B] bg-[#0C1425] p-4 sm:p-5 space-y-3 sm:space-y-4 max-h-[44vh] overflow-y-auto shrink-0">
           {/* USER QUERY VISIBLE AT TOP */}
-          <div className="rounded-xl border border-cyan-500/30 bg-[#071329] p-4 shadow-sm">
+          <div className="rounded-xl border border-cyan-500/30 bg-[#071329] p-3 sm:p-4 shadow-sm">
             <div className="flex items-center justify-between mb-1.5">
               <span className="text-[11px] font-bold uppercase tracking-wider text-cyan-400 flex items-center gap-2">
                 <Search className="h-3.5 w-3.5 text-cyan-400" />
@@ -205,24 +222,24 @@ export const TraceInspectorModal: React.FC<TraceInspectorModalProps> = ({ tree, 
                 </button>
               )}
             </div>
-            <p className="text-sm sm:text-base font-semibold text-white leading-relaxed font-sans">
+            <p className="text-xs sm:text-sm font-semibold text-white leading-relaxed font-sans">
               {queryText || "Investigation Pipeline Execution"}
             </p>
           </div>
 
           {/* KPI Strip */}
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-            <div className="rounded-lg border border-[#1E293B] bg-[#0F172A] p-2.5">
+            <div className="rounded-lg border border-[#1E293B] bg-[#0F172A] p-2 sm:p-2.5">
               <span className="text-[10px] font-semibold uppercase text-slate-400 block">Total Latency</span>
-              <span className="text-base font-bold font-mono text-cyan-400">
+              <span className="text-sm sm:text-base font-bold font-mono text-cyan-400">
                 {formatDuration(totalDurationMs)}
               </span>
             </div>
 
-            <div className="rounded-lg border border-[#1E293B] bg-[#0F172A] p-2.5">
+            <div className="rounded-lg border border-[#1E293B] bg-[#0F172A] p-2 sm:p-2.5">
               <span className="text-[10px] font-semibold uppercase text-slate-400 block">Total Tokens</span>
               <div className="flex items-baseline gap-1">
-                <span className="text-base font-bold font-mono text-white">
+                <span className="text-sm sm:text-base font-bold font-mono text-white">
                   {totalTokens.toLocaleString()}
                 </span>
                 <span className="text-[10px] text-slate-500 font-mono">
@@ -231,17 +248,17 @@ export const TraceInspectorModal: React.FC<TraceInspectorModalProps> = ({ tree, 
               </div>
             </div>
 
-            <div className="rounded-lg border border-[#1E293B] bg-[#0F172A] p-2.5">
+            <div className="rounded-lg border border-[#1E293B] bg-[#0F172A] p-2 sm:p-2.5">
               <span className="text-[10px] font-semibold uppercase text-slate-400 block">Execution Steps</span>
-              <span className="text-base font-bold font-mono text-white">
+              <span className="text-sm sm:text-base font-bold font-mono text-white">
                 {sortedSpans.length} steps recorded
               </span>
             </div>
 
-            <div className="rounded-lg border border-[#1E293B] bg-[#0F172A] p-2.5">
+            <div className="rounded-lg border border-[#1E293B] bg-[#0F172A] p-2 sm:p-2.5">
               <span className="text-[10px] font-semibold uppercase text-slate-400 block">Execution Status</span>
               <span
-                className={`text-base font-bold font-mono ${
+                className={`text-sm sm:text-base font-bold font-mono ${
                   hasError ? "text-rose-400" : "text-emerald-400"
                 }`}
               >
@@ -250,39 +267,87 @@ export const TraceInspectorModal: React.FC<TraceInspectorModalProps> = ({ tree, 
             </div>
           </div>
 
-          {/* Failure Alert Box if Error present */}
+          {/* Failure Alert Box - Sleek, compact and informative with collapsible/expandable traceback */}
           {hasError && failedSpan?.error && (
-            <div className="rounded-xl border border-rose-600/40 bg-rose-950/30 p-4 space-y-2">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2 text-rose-400 font-semibold text-xs sm:text-sm">
-                  <AlertTriangle className="h-4 w-4 flex-shrink-0" />
-                  <span>Pipeline Execution Failure: {failedSpan.error.type}</span>
+            <div className="rounded-xl border border-rose-600/50 bg-rose-950/25 p-3.5 sm:p-4 space-y-2.5 shadow-lg shadow-rose-950/20">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <div className="flex h-6 w-6 items-center justify-center rounded-md bg-rose-900/60 border border-rose-700/60 text-rose-300">
+                    <AlertTriangle className="h-3.5 w-3.5 text-rose-400" />
+                  </div>
+                  <span className="text-xs sm:text-sm font-bold text-rose-300">
+                    Pipeline Execution Failure:{" "}
+                    <span className="text-white font-mono">{failedSpan.error.type || "Error"}</span>
+                  </span>
                 </div>
-                <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-rose-900/40 text-rose-300 border border-rose-800/40">
-                  Step: {failedSpan.step_name}
-                </span>
+
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {/* Step Pill & Quick Jump to Step */}
+                  <button
+                    onClick={() => jumpToSpan(failedSpan.span_id)}
+                    className="inline-flex items-center gap-1 text-[11px] font-mono px-2 py-0.5 rounded bg-rose-900/40 hover:bg-rose-900/70 text-rose-200 border border-rose-700/50 transition-colors"
+                    title="Jump to this step in the flow"
+                  >
+                    <span>Step: <strong className="text-white">{failedSpan.step_name}</strong></span>
+                    <ArrowDownRight className="h-3 w-3 text-rose-400" />
+                  </button>
+
+                  {/* Copy Error Message */}
+                  <button
+                    onClick={() => copyToClipboard(failedSpan.error!.message, "err_msg")}
+                    className="text-[10px] text-rose-300 hover:text-white font-mono px-2 py-0.5 rounded bg-black/40 border border-rose-800/40 transition-colors"
+                  >
+                    {copiedSection === "err_msg" ? "Copied!" : "Copy Error"}
+                  </button>
+
+                  {/* Inline Traceback Toggle Button */}
+                  {failedSpan.error.traceback && (
+                    <button
+                      onClick={() => setShowInlineTraceback((prev) => !prev)}
+                      className="inline-flex items-center gap-1 text-[10px] text-rose-200 hover:text-white font-mono px-2.5 py-0.5 rounded bg-rose-900/50 hover:bg-rose-800/60 border border-rose-700/60 transition-colors font-semibold"
+                    >
+                      {showInlineTraceback ? (
+                        <>
+                          <ChevronDown className="h-3 w-3" />
+                          <span>Hide Traceback</span>
+                        </>
+                      ) : (
+                        <>
+                          <ChevronRight className="h-3 w-3" />
+                          <span>View Traceback</span>
+                        </>
+                      )}
+                    </button>
+                  )}
+
+                  {/* Open in Dedicated Tab */}
+                  {failedSpan.error.traceback && (
+                    <button
+                      onClick={() => setViewMode("error")}
+                      className="inline-flex items-center gap-1 text-[10px] text-cyan-300 hover:text-cyan-100 font-mono px-2 py-0.5 rounded bg-cyan-950/40 hover:bg-cyan-900/50 border border-cyan-700/40 transition-colors"
+                      title="Inspect full traceback view"
+                    >
+                      <span>Full Inspector</span>
+                      <ExternalLink className="h-3 w-3" />
+                    </button>
+                  )}
+                </div>
               </div>
 
-              <p className="text-xs text-rose-200 font-mono bg-black/30 p-2.5 rounded-lg border border-rose-800/30">
+              {/* Error Message Box */}
+              <div className="text-xs text-rose-200 font-mono bg-black/40 p-2.5 rounded-lg border border-rose-900/40 break-words leading-relaxed max-h-24 overflow-y-auto">
                 {failedSpan.error.message}
-              </p>
+              </div>
 
-              {failedSpan.error.traceback && (
-                <div className="space-y-1">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[10px] uppercase font-bold text-rose-400/80">
-                      Exception Traceback:
-                    </span>
-                    <button
-                      onClick={() => copyToClipboard(failedSpan.error!.traceback!, "tb")}
-                      className="text-[10px] text-rose-300 hover:text-white font-mono"
-                    >
-                      {copiedSection === "tb" ? "Copied!" : "Copy Traceback"}
-                    </button>
-                  </div>
-                  <pre className="max-h-40 overflow-y-auto rounded-lg bg-black/60 p-3 text-[11px] font-mono text-rose-300/90 whitespace-pre border border-rose-900/40">
-                    {failedSpan.error.traceback}
-                  </pre>
+              {/* Inline Collapsible Traceback */}
+              {showInlineTraceback && failedSpan.error.traceback && (
+                <div className="pt-1">
+                  <TracebackViewer
+                    traceback={failedSpan.error.traceback}
+                    errorType={failedSpan.error.type}
+                    errorMessage={failedSpan.error.message}
+                    maxHeight="max-h-56"
+                  />
                 </div>
               )}
             </div>
@@ -290,7 +355,7 @@ export const TraceInspectorModal: React.FC<TraceInspectorModalProps> = ({ tree, 
         </div>
 
         {/* 3. Navigation View Switcher & Accordion Controls */}
-        <div className="flex items-center justify-between border-b border-[#1E293B] bg-[#070C19] px-6 py-2.5">
+        <div className="flex items-center justify-between border-b border-[#1E293B] bg-[#070C19] px-6 py-2.5 shrink-0">
           <div className="flex items-center gap-3">
             <span className="text-xs font-semibold text-white">Execution Steps (First to Latest):</span>
             <div className="flex items-center gap-1.5">
@@ -340,11 +405,24 @@ export const TraceInspectorModal: React.FC<TraceInspectorModalProps> = ({ tree, 
             >
               Raw Payloads
             </button>
+            {hasError && failedSpan?.error && (
+              <button
+                onClick={() => setViewMode("error")}
+                className={`rounded-md px-3 py-1 text-xs font-medium transition-all flex items-center gap-1.5 ${
+                  viewMode === "error"
+                    ? "bg-rose-950/80 text-rose-300 font-semibold border border-rose-700/60 shadow-sm"
+                    : "text-rose-400 hover:text-rose-200 hover:bg-rose-950/30"
+                }`}
+              >
+                <Bug className="h-3 w-3 text-rose-400" />
+                <span>Error Traceback</span>
+              </button>
+            )}
           </div>
         </div>
 
-        {/* 4. Modal Body: Tool & Agent Detailed Steps */}
-        <div className="flex-1 overflow-y-auto p-6 space-y-4">
+        {/* 4. Modal Body: Tool & Agent Detailed Steps (ALWAYS HAS AMPLE SPACE) */}
+        <div className="flex-1 overflow-y-auto p-6 space-y-4 min-h-0">
           {/* VIEW 1: TOOL & AGENT FLOW - CHRONOLOGICAL, COLLAPSED, VERTICAL FULL-WIDTH MARKDOWN */}
           {viewMode === "flow" && (
             <div className="space-y-3">
@@ -364,9 +442,10 @@ export const TraceInspectorModal: React.FC<TraceInspectorModalProps> = ({ tree, 
                 return (
                   <div
                     key={span.span_id}
+                    id={`span-${span.span_id}`}
                     className={`rounded-xl border transition-all ${
                       isError
-                        ? "border-rose-600/50 bg-rose-950/10"
+                        ? "border-rose-600/70 bg-rose-950/15 shadow-md shadow-rose-950/20"
                         : isExpanded
                         ? "border-cyan-500/40 bg-[#0F172A] shadow-md"
                         : "border-[#1E293B] bg-[#0F172A] hover:border-slate-700"
@@ -388,7 +467,13 @@ export const TraceInspectorModal: React.FC<TraceInspectorModalProps> = ({ tree, 
                         </div>
 
                         {/* Step Number in Chronological Order (1 to N) */}
-                        <span className="flex h-6 w-6 items-center justify-center rounded-md bg-[#070C19] border border-[#1E293B] text-[11px] font-bold font-mono text-cyan-400">
+                        <span
+                          className={`flex h-6 w-6 items-center justify-center rounded-md border text-[11px] font-bold font-mono ${
+                            isError
+                              ? "bg-rose-950 border-rose-700 text-rose-400"
+                              : "bg-[#070C19] border-[#1E293B] text-cyan-400"
+                          }`}
+                        >
                           {idx + 1}
                         </span>
 
@@ -398,6 +483,14 @@ export const TraceInspectorModal: React.FC<TraceInspectorModalProps> = ({ tree, 
                         >
                           {span.step_type}
                         </span>
+
+                        {/* Failed Indicator Badge */}
+                        {isError && (
+                          <span className="rounded px-2 py-0.5 text-[10px] font-bold uppercase bg-rose-950 text-rose-300 border border-rose-600/80 flex items-center gap-1 shadow-sm">
+                            <AlertTriangle className="h-3 w-3 text-rose-400" />
+                            Failed
+                          </span>
+                        )}
 
                         <div>
                           <div className="flex items-center gap-2">
@@ -450,6 +543,37 @@ export const TraceInspectorModal: React.FC<TraceInspectorModalProps> = ({ tree, 
                           />
                         </div>
 
+                        {/* Error Banner & Traceback if Span has Error */}
+                        {isError && span.error && (
+                          <div className="rounded-xl border border-rose-600/50 bg-rose-950/20 p-4 space-y-3">
+                            <div className="flex items-center justify-between">
+                              <div className="font-bold text-rose-300 text-xs sm:text-sm flex items-center gap-2">
+                                <AlertTriangle className="h-4 w-4 text-rose-400" />
+                                <span>Step Failed: {span.error.type || "Execution Error"}</span>
+                              </div>
+                              <button
+                                onClick={() => copyToClipboard(span.error!.message, `errmsg_${span.span_id}`)}
+                                className="text-[10px] text-rose-300 hover:text-white font-mono px-2 py-0.5 rounded bg-black/40 border border-rose-800/40 transition-colors"
+                              >
+                                {copiedSection === `errmsg_${span.span_id}` ? "Copied!" : "Copy Error"}
+                              </button>
+                            </div>
+                            <p className="font-mono text-xs text-rose-200 bg-black/40 p-2.5 rounded-lg border border-rose-900/40 break-words leading-relaxed">
+                              {span.error.message}
+                            </p>
+                            {span.error.traceback && (
+                              <div className="pt-1">
+                                <TracebackViewer
+                                  traceback={span.error.traceback}
+                                  errorType={span.error.type}
+                                  errorMessage={span.error.message}
+                                  maxHeight="max-h-72"
+                                />
+                              </div>
+                            )}
+                          </div>
+                        )}
+
                         {/* VERTICAL FULL-WIDTH 1: INPUT IN MARKDOWN */}
                         <div className="w-full rounded-xl border border-[#1E293B] bg-[#0A101D] p-4 space-y-2">
                           <div className="flex items-center justify-between pb-2 border-b border-[#1E293B]">
@@ -483,20 +607,6 @@ export const TraceInspectorModal: React.FC<TraceInspectorModalProps> = ({ tree, 
                               {copiedSection === `out_${span.span_id}` ? "Copied!" : "Copy Output"}
                             </button>
                           </div>
-
-                          {/* Error Banner if Span has Error */}
-                          {isError && span.error && (
-                            <div className="rounded-lg border border-rose-600/40 bg-rose-950/30 p-3 mb-2 text-xs text-rose-200">
-                              <div className="font-bold text-rose-300 mb-1 flex items-center gap-1.5">
-                                <AlertTriangle className="h-3.5 w-3.5 text-rose-400" />
-                                Step Error ({span.error.type || "Failure"}):
-                              </div>
-                              <p className="font-mono text-[11px] text-rose-200">
-                                {span.error.message}
-                              </p>
-                            </div>
-                          )}
-
                           <div className="w-full pt-1">
                             <MarkdownViewer content={outputMarkdown} />
                           </div>
@@ -524,6 +634,7 @@ export const TraceInspectorModal: React.FC<TraceInspectorModalProps> = ({ tree, 
 
                 {sortedSpans.map((s) => {
                   const badge = getStepTypeBadgeColor(s.step_type);
+                  const isErr = s.status === "error" || !!s.error;
                   const startOffset = Math.max(0, ((s.start_time ?? 0) - minStart) * 1000);
                   const leftPct = Math.min(99, Math.max(0, (startOffset / totalDurationMs) * 100));
                   const widthPct = Math.min(
@@ -534,7 +645,9 @@ export const TraceInspectorModal: React.FC<TraceInspectorModalProps> = ({ tree, 
                   return (
                     <div
                       key={s.span_id}
-                      className="grid grid-cols-12 gap-2 items-center py-2 text-xs border-b border-[#1E293B]/40 hover:bg-[#131F37]/50 transition-colors"
+                      className={`grid grid-cols-12 gap-2 items-center py-2 text-xs border-b border-[#1E293B]/40 hover:bg-[#131F37]/50 transition-colors ${
+                        isErr ? "bg-rose-950/15" : ""
+                      }`}
                     >
                       <div className="col-span-5 flex items-center gap-2 truncate">
                         <span
@@ -543,9 +656,18 @@ export const TraceInspectorModal: React.FC<TraceInspectorModalProps> = ({ tree, 
                           {s.step_type}
                         </span>
                         <span className="font-semibold text-white truncate">{s.step_name}</span>
+                        {isErr && (
+                          <span className="text-[9px] font-bold uppercase bg-rose-950 text-rose-400 px-1.5 py-0.2 rounded border border-rose-800">
+                            Failed
+                          </span>
+                        )}
                       </div>
 
-                      <div className="col-span-2 text-right font-mono font-medium text-cyan-400">
+                      <div
+                        className={`col-span-2 text-right font-mono font-medium ${
+                          isErr ? "text-rose-400 font-bold" : "text-cyan-400"
+                        }`}
+                      >
                         {formatDuration(s.duration_ms)}
                       </div>
 
@@ -555,7 +677,9 @@ export const TraceInspectorModal: React.FC<TraceInspectorModalProps> = ({ tree, 
 
                       <div className="col-span-3 relative h-4 bg-[#070C19] rounded overflow-hidden">
                         <div
-                          className="absolute top-0 bottom-0 rounded bg-cyan-500 shadow-sm"
+                          className={`absolute top-0 bottom-0 rounded shadow-sm ${
+                            isErr ? "bg-rose-500 shadow-rose-950" : "bg-cyan-500 shadow-cyan-950"
+                          }`}
                           style={{ left: `${leftPct}%`, width: `${widthPct}%` }}
                         />
                       </div>
@@ -581,6 +705,93 @@ export const TraceInspectorModal: React.FC<TraceInspectorModalProps> = ({ tree, 
               <pre className="rounded-xl border border-[#1E293B] bg-[#070C19] p-4 font-mono text-xs text-slate-300 overflow-x-auto whitespace-pre-wrap max-h-[500px]">
                 {JSON.stringify(tree, null, 2)}
               </pre>
+            </div>
+          )}
+
+          {/* VIEW 4: DEDICATED ERROR & TRACEBACK INSPECTOR */}
+          {viewMode === "error" && failedSpan?.error && (
+            <div className="space-y-4">
+              {/* Failed Step Summary Card */}
+              <div className="rounded-xl border border-rose-600/50 bg-rose-950/20 p-5 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-rose-900/60 border border-rose-700/60 text-rose-300">
+                      <AlertOctagon className="h-5 w-5 text-rose-400" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h3 className="font-bold text-white text-base">
+                          {failedSpan.error.type || "Execution Error"}
+                        </h3>
+                        <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-rose-900/50 text-rose-300 border border-rose-800/50">
+                          Step: {failedSpan.step_name}
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-400 mt-0.5">
+                        Component: <span className="text-cyan-400 font-mono">{failedSpan.component}</span> • Duration:{" "}
+                        <span className="text-rose-400 font-mono font-semibold">{formatDuration(failedSpan.duration_ms)}</span>
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => jumpToSpan(failedSpan.span_id)}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs bg-[#0F172A] hover:bg-[#1E293B] border border-[#1E293B] text-slate-300 hover:text-white transition-colors"
+                    >
+                      <span>Jump to Step in Flow</span>
+                      <ArrowDownRight className="h-3.5 w-3.5 text-cyan-400" />
+                    </button>
+                    <button
+                      onClick={() => copyToClipboard(failedSpan.error!.message, "error_view_msg")}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs bg-rose-950/60 hover:bg-rose-900/70 border border-rose-800/60 text-rose-300 hover:text-white font-mono transition-colors"
+                    >
+                      <Copy className="h-3 w-3" />
+                      <span>{copiedSection === "error_view_msg" ? "Copied!" : "Copy Error Message"}</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div className="text-xs text-rose-200 font-mono bg-black/40 p-3 rounded-lg border border-rose-900/40 break-words leading-relaxed">
+                  {failedSpan.error.message}
+                </div>
+              </div>
+
+              {/* Full Traceback Component */}
+              {failedSpan.error.traceback ? (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold uppercase tracking-wider text-rose-400 flex items-center gap-2">
+                      <Bug className="h-4 w-4 text-rose-400" />
+                      Full Exception Stack Trace
+                    </span>
+                  </div>
+                  <TracebackViewer
+                    traceback={failedSpan.error.traceback}
+                    errorType={failedSpan.error.type}
+                    errorMessage={failedSpan.error.message}
+                    maxHeight="max-h-[500px]"
+                    initialWrap={true}
+                  />
+                </div>
+              ) : (
+                <div className="rounded-xl border border-[#1E293B] bg-[#0F172A] p-6 text-center text-xs text-slate-400">
+                  No Python stack trace string was recorded for this error.
+                </div>
+              )}
+
+              {/* Step Input Context */}
+              {failedSpan.inputs && Object.keys(failedSpan.inputs).length > 0 && (
+                <div className="rounded-xl border border-[#1E293B] bg-[#0F172A] p-4 space-y-2">
+                  <span className="text-xs font-bold uppercase tracking-wider text-cyan-400 flex items-center gap-2">
+                    <FileText className="h-3.5 w-3.5 text-cyan-400" />
+                    Inputs Provided to Failed Step
+                  </span>
+                  <div className="pt-1">
+                    <MarkdownViewer content={formatPayloadToMarkdown(failedSpan.inputs, true)} />
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
