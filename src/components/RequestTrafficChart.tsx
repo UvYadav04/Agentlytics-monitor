@@ -13,8 +13,8 @@ export const RequestTrafficChart: React.FC<RequestTrafficChartProps> = ({ data }
   if (!data || data.length === 0) {
     return (
       <div className="flex h-full flex-col justify-between rounded-xl border border-[#1E293B] bg-[#0F172A] p-5 shadow-card">
-        <h3 className="text-sm font-semibold text-white">Investigation Activity</h3>
-        <p className="text-xs text-slate-500 my-auto text-center">No trace activity data available</p>
+        <h3 className="text-sm font-semibold text-white">Request Traffic</h3>
+        <p className="text-xs text-slate-500 my-auto text-center">No request traffic data available</p>
       </div>
     );
   }
@@ -200,7 +200,7 @@ export const RequestTrafficChart: React.FC<RequestTrafficChartProps> = ({ data }
       <div className="mt-2 flex items-center justify-center gap-2 border-t border-[#1E293B]/60 pt-2 text-xs">
         <div className="flex items-center gap-1.5">
           <span className="h-2 w-2 rounded-full bg-cyan-400" />
-          <span className="text-[11px] font-medium text-slate-400">Investigations Traced</span>
+          <span className="text-[11px] font-medium text-slate-400">Requests Traced</span>
         </div>
       </div>
     </div>

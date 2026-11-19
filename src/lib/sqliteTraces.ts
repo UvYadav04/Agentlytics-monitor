@@ -114,15 +114,15 @@ export function queryDashboardOverviewFromDb(): DashboardTelemetry | null {
   try {
     const db = new DatabaseSync(dbPath, { readOnly: true });
 
-    // 1. Durations, error counts, days
+    // 1. Durations, error counts, days grouped by request (investigation_id or trace_id)
     const traceQuery = `
       SELECT
-        t.trace_id,
+        COALESCE(json_extract(t.tags_json, '$.investigation_id'), t.trace_id) as request_id,
         ROUND((MAX(t.end_time) - MIN(t.start_time)), 3) as duration_s,
         SUM(CASE WHEN t.status = 'error' THEN 1 ELSE 0 END) as error_count,
         substr(MIN(t.created_at), 1, 10) as day
       FROM spans t
-      GROUP BY t.trace_id
+      GROUP BY request_id
     `;
     const traceRows = db.prepare(traceQuery).all() as any[];
     const totalTraces = traceRows.length;
@@ -260,10 +260,10 @@ export function queryDashboardOverviewFromDb(): DashboardTelemetry | null {
     const slowestRows = db.prepare(slowestQuery).all() as any[];
     const slowestSpans = slowestRows.map(rowToSpan);
 
-    // 6. Recent traces
+    // 6. Recent requests (grouped by investigation_id or trace_id)
     const recentQuery = `
       SELECT
-        t.trace_id,
+        COALESCE(json_extract(t.tags_json, '$.investigation_id'), t.trace_id) as request_id,
         MIN(t.start_time) as start_time,
         MAX(t.end_time) as end_time,
         ROUND((MAX(t.end_time) - MIN(t.start_time)) * 1000, 2) as total_duration_ms,
@@ -273,13 +273,12 @@ export function queryDashboardOverviewFromDb(): DashboardTelemetry | null {
         SUM(t.completion_tokens) as total_completion_tokens,
         SUM(t.total_tokens) as total_tokens,
         MAX(t.created_at) as created_at,
-        r.step_name as root_step_name,
-        r.component as root_component,
-        r.inputs_json as root_inputs,
-        r.tags_json as root_tags
+        (SELECT s.step_name FROM spans s WHERE (s.trace_id = t.trace_id OR json_extract(s.tags_json, '$.investigation_id') = COALESCE(json_extract(t.tags_json, '$.investigation_id'), t.trace_id)) AND (s.parent_span_id IS NULL OR s.parent_span_id = '') LIMIT 1) as root_step_name,
+        (SELECT s.component FROM spans s WHERE (s.trace_id = t.trace_id OR json_extract(s.tags_json, '$.investigation_id') = COALESCE(json_extract(t.tags_json, '$.investigation_id'), t.trace_id)) AND (s.parent_span_id IS NULL OR s.parent_span_id = '') LIMIT 1) as root_component,
+        (SELECT s.inputs_json FROM spans s WHERE (s.trace_id = t.trace_id OR json_extract(s.tags_json, '$.investigation_id') = COALESCE(json_extract(t.tags_json, '$.investigation_id'), t.trace_id)) AND (s.inputs_json LIKE '%"objective"%' OR s.inputs_json LIKE '%"query"%' OR s.inputs_json LIKE '%"prompt"%') ORDER BY s.start_time ASC LIMIT 1) as query_inputs,
+        (SELECT s.tags_json FROM spans s WHERE (s.trace_id = t.trace_id OR json_extract(s.tags_json, '$.investigation_id') = COALESCE(json_extract(t.tags_json, '$.investigation_id'), t.trace_id)) AND (s.tags_json LIKE '%"query"%' OR s.tags_json LIKE '%"objective"%') ORDER BY s.start_time ASC LIMIT 1) as query_tags
       FROM spans t
-      LEFT JOIN spans r ON r.trace_id = t.trace_id AND (r.parent_span_id IS NULL OR r.parent_span_id = '')
-      GROUP BY t.trace_id
+      GROUP BY request_id
       ORDER BY start_time DESC
       LIMIT 50
     `;
@@ -287,43 +286,61 @@ export function queryDashboardOverviewFromDb(): DashboardTelemetry | null {
     const recentTraces: TraceSummary[] = recentRows.map((d) => {
       const stepName = d.root_step_name || "";
       const component = d.root_component || "";
-      const inputs = parseJsonSafe(d.root_inputs, {});
-      const tags = parseJsonSafe(d.root_tags, {});
+      const queryInputs = parseJsonSafe(d.query_inputs, {});
+      const queryTags = parseJsonSafe(d.query_tags, {});
 
-      let q = inputs?.objective || inputs?.query || inputs?.question || "";
-      if (!q && inputs?.messages && Array.isArray(inputs.messages)) {
-        const lastMsg = inputs.messages[inputs.messages.length - 1];
+      let q =
+        queryInputs?.objective ||
+        queryInputs?.query ||
+        queryInputs?.question ||
+        queryInputs?.prompt ||
+        queryTags?.query ||
+        queryTags?.objective ||
+        "";
+
+      if (!q && queryInputs?.messages && Array.isArray(queryInputs.messages)) {
+        const lastMsg = queryInputs.messages[queryInputs.messages.length - 1];
         q = typeof lastMsg === "object" ? lastMsg.content || "" : String(lastMsg);
       }
       if (!q) {
-        q = "Execution of " + (stepName || component || "data pipeline");
+        q = "Execution of " + (stepName || component || "Data Query");
       }
 
       let intent = "Data Investigation";
       let route = "orchestrator";
-      if (stepName.includes("tabular") || component.includes("tabular")) {
+      const fullText = (stepName + " " + component + " " + (d.request_id || "")).toLowerCase();
+      if (fullText.includes("tabular") || fullText.includes("duckdb")) {
         intent = "Tabular Analysis";
         route = "agent.tabular";
-      } else if (stepName.includes("database") || component.includes("database")) {
+      } else if (fullText.includes("database") || fullText.includes("sql")) {
         intent = "SQL Query Execution";
         route = "agent.database";
-      } else if (stepName.includes("document") || component.includes("document")) {
+      } else if (fullText.includes("document") || fullText.includes("rag")) {
         intent = "Document RAG";
         route = "agent.document";
+      } else if (fullText.includes("light")) {
+        intent = "Direct Assistant";
+        route = "light.reply";
       }
 
       const totalTokensTrace =
         Number(d.total_tokens) || Number(d.total_prompt_tokens || 0) + Number(d.total_completion_tokens || 0);
 
+      const durMs = Number(d.total_duration_ms || 0);
+      const isErr = Number(d.error_count || 0) > 0;
+      const isTimeout = durMs > 30000;
+      const status = isErr ? "Error" : isTimeout ? "Timeout" : "OK";
+
       return {
-        trace_id: d.trace_id,
-        user_id: tags?.user_id || "usr_dinesh",
-        workspace_id: tags?.workspace_id || "ws_prod",
+        trace_id: d.request_id || d.trace_id,
+        user_id: queryTags?.user_id || "usr_prod",
+        workspace_id: queryTags?.workspace_id || "ws_prod",
         intent,
         route,
-        status: Number(d.error_count) > 0 ? "Error" : "OK",
+        status,
         error_count: Number(d.error_count || 0),
-        total_duration_ms: Number(d.total_duration_ms || 1200),
+        total_duration_ms: durMs,
+        latency_s: Number((durMs / 1000).toFixed(2)),
         total_spans: Number(d.total_spans || 1),
         total_prompt_tokens: Number(d.total_prompt_tokens || 0),
         total_completion_tokens: Number(d.total_completion_tokens || 0),
@@ -374,9 +391,12 @@ export function queryTraceTreeFromDb(traceId: string): TraceTree | null {
     const db = new DatabaseSync(dbPath, { readOnly: true });
     const rows = db
       .prepare(
-        `SELECT * FROM spans WHERE trace_id = ? ORDER BY start_time ASC`
+        `SELECT * FROM spans 
+         WHERE trace_id = ? 
+            OR json_extract(tags_json, '$.investigation_id') = ?
+         ORDER BY start_time ASC`
       )
-      .all(traceId) as any[];
+      .all(traceId, traceId) as any[];
     db.close();
 
     if (!rows || rows.length === 0) return null;
@@ -429,7 +449,7 @@ export function queryTracesListFromDb(limit = 50, offset = 0, status?: string): 
 
     const query = `
       SELECT
-        t.trace_id,
+        COALESCE(json_extract(t.tags_json, '$.investigation_id'), t.trace_id) as request_id,
         MIN(t.start_time) as start_time,
         MAX(t.end_time) as end_time,
         ROUND((MAX(t.end_time) - MIN(t.start_time)) * 1000, 2) as total_duration_ms,
@@ -439,13 +459,12 @@ export function queryTracesListFromDb(limit = 50, offset = 0, status?: string): 
         SUM(t.completion_tokens) as total_completion_tokens,
         SUM(t.total_tokens) as total_tokens,
         MAX(t.created_at) as created_at,
-        r.step_name as root_step_name,
-        r.component as root_component,
-        r.inputs_json as root_inputs,
-        r.tags_json as root_tags
+        (SELECT s.step_name FROM spans s WHERE (s.trace_id = t.trace_id OR json_extract(s.tags_json, '$.investigation_id') = COALESCE(json_extract(t.tags_json, '$.investigation_id'), t.trace_id)) AND (s.parent_span_id IS NULL OR s.parent_span_id = '') LIMIT 1) as root_step_name,
+        (SELECT s.component FROM spans s WHERE (s.trace_id = t.trace_id OR json_extract(s.tags_json, '$.investigation_id') = COALESCE(json_extract(t.tags_json, '$.investigation_id'), t.trace_id)) AND (s.parent_span_id IS NULL OR s.parent_span_id = '') LIMIT 1) as root_component,
+        (SELECT s.inputs_json FROM spans s WHERE (s.trace_id = t.trace_id OR json_extract(s.tags_json, '$.investigation_id') = COALESCE(json_extract(t.tags_json, '$.investigation_id'), t.trace_id)) AND (s.inputs_json LIKE '%"objective"%' OR s.inputs_json LIKE '%"query"%' OR s.inputs_json LIKE '%"prompt"%') ORDER BY s.start_time ASC LIMIT 1) as query_inputs,
+        (SELECT s.tags_json FROM spans s WHERE (s.trace_id = t.trace_id OR json_extract(s.tags_json, '$.investigation_id') = COALESCE(json_extract(t.tags_json, '$.investigation_id'), t.trace_id)) AND (s.tags_json LIKE '%"query"%' OR s.tags_json LIKE '%"objective"%') ORDER BY s.start_time ASC LIMIT 1) as query_tags
       FROM spans t
-      LEFT JOIN spans r ON r.trace_id = t.trace_id AND (r.parent_span_id IS NULL OR r.parent_span_id = '')
-      GROUP BY t.trace_id
+      GROUP BY request_id
       ${havingClause}
       ORDER BY start_time DESC
       LIMIT ? OFFSET ?
@@ -457,43 +476,61 @@ export function queryTracesListFromDb(limit = 50, offset = 0, status?: string): 
     return rows.map((d) => {
       const stepName = d.root_step_name || "";
       const component = d.root_component || "";
-      const inputs = parseJsonSafe(d.root_inputs, {});
-      const tags = parseJsonSafe(d.root_tags, {});
+      const queryInputs = parseJsonSafe(d.query_inputs, {});
+      const queryTags = parseJsonSafe(d.query_tags, {});
 
-      let q = inputs?.objective || inputs?.query || inputs?.question || "";
-      if (!q && inputs?.messages && Array.isArray(inputs.messages)) {
-        const lastMsg = inputs.messages[inputs.messages.length - 1];
+      let q =
+        queryInputs?.objective ||
+        queryInputs?.query ||
+        queryInputs?.question ||
+        queryInputs?.prompt ||
+        queryTags?.query ||
+        queryTags?.objective ||
+        "";
+
+      if (!q && queryInputs?.messages && Array.isArray(queryInputs.messages)) {
+        const lastMsg = queryInputs.messages[queryInputs.messages.length - 1];
         q = typeof lastMsg === "object" ? lastMsg.content || "" : String(lastMsg);
       }
       if (!q) {
-        q = "Execution of " + (stepName || component || "data pipeline");
+        q = "Execution of " + (stepName || component || "Data Query");
       }
 
       let intent = "Data Investigation";
       let route = "orchestrator";
-      if (stepName.includes("tabular") || component.includes("tabular")) {
+      const fullText = (stepName + " " + component + " " + (d.request_id || "")).toLowerCase();
+      if (fullText.includes("tabular") || fullText.includes("duckdb")) {
         intent = "Tabular Analysis";
         route = "agent.tabular";
-      } else if (stepName.includes("database") || component.includes("database")) {
+      } else if (fullText.includes("database") || fullText.includes("sql")) {
         intent = "SQL Query Execution";
         route = "agent.database";
-      } else if (stepName.includes("document") || component.includes("document")) {
+      } else if (fullText.includes("document") || fullText.includes("rag")) {
         intent = "Document RAG";
         route = "agent.document";
+      } else if (fullText.includes("light")) {
+        intent = "Direct Assistant";
+        route = "light.reply";
       }
 
       const totalTokensTrace =
         Number(d.total_tokens) || Number(d.total_prompt_tokens || 0) + Number(d.total_completion_tokens || 0);
 
+      const durMs = Number(d.total_duration_ms || 0);
+      const isErr = Number(d.error_count || 0) > 0;
+      const isTimeout = durMs > 30000;
+      const status = isErr ? "Error" : isTimeout ? "Timeout" : "OK";
+
       return {
-        trace_id: d.trace_id,
-        user_id: tags?.user_id || "usr_dinesh",
-        workspace_id: tags?.workspace_id || "ws_prod",
+        trace_id: d.request_id || d.trace_id,
+        user_id: queryTags?.user_id || "usr_prod",
+        workspace_id: queryTags?.workspace_id || "ws_prod",
         intent,
         route,
-        status: Number(d.error_count) > 0 ? "Error" : "OK",
+        status,
         error_count: Number(d.error_count || 0),
-        total_duration_ms: Number(d.total_duration_ms || 1200),
+        total_duration_ms: durMs,
+        latency_s: Number((durMs / 1000).toFixed(2)),
         total_spans: Number(d.total_spans || 1),
         total_prompt_tokens: Number(d.total_prompt_tokens || 0),
         total_completion_tokens: Number(d.total_completion_tokens || 0),

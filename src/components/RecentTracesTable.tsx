@@ -1,9 +1,9 @@
 "use client";
 
 import React, { useState } from "react";
-import { Filter, Search } from "lucide-react";
+import { Filter, Layers, Search, Sparkles, Terminal } from "lucide-react";
 import type { TraceSummary } from "@/lib/types";
-import { formatDuration, formatTokens } from "@/lib/formatters";
+import { formatDuration } from "@/lib/formatters";
 
 interface RecentTracesTableProps {
   traces: TraceSummary[];
@@ -27,6 +27,7 @@ export const RecentTracesTable: React.FC<RecentTracesTableProps> = ({
     const matchesSearch =
       t.trace_id.toLowerCase().includes(q) ||
       (t.intent && t.intent.toLowerCase().includes(q)) ||
+      (t.route && t.route.toLowerCase().includes(q)) ||
       (t.query && t.query.toLowerCase().includes(q));
 
     let matchesFilter = true;
@@ -46,8 +47,13 @@ export const RecentTracesTable: React.FC<RecentTracesTableProps> = ({
       {/* Header with Title and Search/Filter Controls */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between pb-3 border-b border-[#1E293B]">
         <div>
-          <h3 className="text-sm font-semibold text-white">Recent request traces</h3>
-          <p className="text-xs text-slate-400 mt-0.5">Click a trace to inspect the full request path</p>
+          <div className="flex items-center gap-2">
+            <h3 className="text-sm font-semibold text-white">Recent Requests</h3>
+            <span className="rounded-full bg-cyan-950/80 border border-cyan-800/50 px-2 py-0.5 text-[10px] font-medium text-cyan-300">
+              {traces.length} {traces.length === 1 ? "request" : "requests"}
+            </span>
+          </div>
+          <p className="text-xs text-slate-400 mt-0.5">Click a request to inspect its multi-step execution path</p>
         </div>
 
         <div className="flex items-center gap-2">
@@ -56,10 +62,10 @@ export const RecentTracesTable: React.FC<RecentTracesTableProps> = ({
             <Search className="absolute left-2.5 top-2 h-3.5 w-3.5 text-slate-500" />
             <input
               type="text"
-              placeholder="Search traces..."
+              placeholder="Search requests by query, intent, ID..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="h-8 rounded-lg border border-[#1E293B] bg-[#070C19] py-1 pl-8 pr-3 text-xs text-slate-200 placeholder-slate-500 focus:border-cyan-500 focus:outline-none focus:ring-1 focus:ring-cyan-500 w-44 sm:w-56"
+              className="h-8 rounded-lg border border-[#1E293B] bg-[#070C19] py-1 pl-8 pr-3 text-xs text-slate-200 placeholder-slate-500 focus:border-cyan-500 focus:outline-none focus:ring-1 focus:ring-cyan-500 w-52 sm:w-64"
             />
           </div>
 
@@ -103,27 +109,28 @@ export const RecentTracesTable: React.FC<RecentTracesTableProps> = ({
         <table className="w-full text-left text-xs">
           <thead>
             <tr className="border-b border-[#1E293B] text-[11px] font-medium text-slate-400">
-              <th className="pb-2.5 font-medium">Time ↓</th>
-              <th className="pb-2.5 font-medium">Trace</th>
-              <th className="pb-2.5 font-medium">Intent</th>
+              <th className="pb-2.5 font-medium pl-1">Request / Query</th>
+              <th className="pb-2.5 font-medium">Steps</th>
+              <th className="pb-2.5 font-medium">Intent / Route</th>
               <th className="pb-2.5 font-medium">Latency</th>
               <th className="pb-2.5 font-medium">Tokens</th>
               <th className="pb-2.5 font-medium">Status</th>
+              <th className="pb-2.5 font-medium text-right pr-2">Time ↓</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-[#1E293B]/40">
             {isLoading ? (
               <tr>
-                <td colSpan={6} className="py-8 text-center text-slate-500">
-                  Loading traces...
+                <td colSpan={7} className="py-8 text-center text-slate-500">
+                  Loading requests...
                 </td>
               </tr>
             ) : filtered.length === 0 ? (
               <tr>
-                <td colSpan={6} className="py-8 text-center text-slate-500">
+                <td colSpan={7} className="py-8 text-center text-slate-500">
                   {traces.length === 0
-                    ? "No investigation traces recorded yet. Traces will appear here once requests run through Quarry Engine."
-                    : "No request traces found matching filter."}
+                    ? "No user requests recorded yet. Requests will appear here once queries run through Quarry Engine."
+                    : "No requests found matching filter."}
                 </td>
               </tr>
             ) : (
@@ -141,6 +148,18 @@ export const RecentTracesTable: React.FC<RecentTracesTableProps> = ({
                 const tokensStr =
                   t.total_tokens !== undefined ? t.total_tokens.toLocaleString() : "—";
 
+                const stepCount = t.total_spans || 1;
+
+                const timeStr =
+                  t.time_display ||
+                  (t.created_at
+                    ? new Date(t.created_at).toLocaleTimeString([], {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                        second: "2-digit",
+                      })
+                    : "—");
+
                 return (
                   <tr
                     key={t.trace_id}
@@ -151,48 +170,76 @@ export const RecentTracesTable: React.FC<RecentTracesTableProps> = ({
                         : "hover:bg-[#131F37]/60"
                     }`}
                   >
-                    <td className="py-3 font-mono text-slate-400 text-[11px]">
-                      {t.time_display ||
-                        new Date(t.created_at).toLocaleTimeString([], {
-                          hour: "2-digit",
-                          minute: "2-digit",
-                          second: "2-digit",
-                        })}
+                    {/* 1. Request / Query */}
+                    <td className="py-3 pl-1 max-w-md pr-4">
+                      <div className="flex flex-col gap-0.5">
+                        <span className="text-slate-100 text-xs sm:text-[13px] font-medium line-clamp-1 group-hover:text-cyan-300 transition-colors">
+                          {t.query || "Data Investigation Request"}
+                        </span>
+                        <div className="flex items-center gap-2 text-[10px] font-mono text-slate-500">
+                          <span className="text-cyan-400/80 hover:text-cyan-300 font-mono">
+                            #{t.trace_id}
+                          </span>
+                          {t.user_id && (
+                            <span className="text-slate-400">· {t.user_id}</span>
+                          )}
+                        </div>
+                      </div>
                     </td>
 
-                    <td className="py-3 font-mono">
-                      <span className="text-cyan-400 underline underline-offset-4 decoration-cyan-400/40 group-hover:decoration-cyan-400 font-medium">
-                        {t.trace_id}
+                    {/* 2. Steps badge */}
+                    <td className="py-3 whitespace-nowrap">
+                      <span className="inline-flex items-center gap-1.5 rounded-md bg-[#131F37] border border-[#1E293B] px-2 py-0.5 text-[11px] font-mono font-medium text-cyan-300">
+                        <Layers className="h-3 w-3 text-cyan-400" />
+                        {stepCount} {stepCount === 1 ? "step" : "steps"}
                       </span>
                     </td>
 
-                    <td className="py-3 text-slate-200 font-medium">
-                      {t.intent || "Direct query"}
+                    {/* 3. Intent & Route */}
+                    <td className="py-3 whitespace-nowrap">
+                      <div className="flex flex-col">
+                        <span className="text-slate-200 font-medium text-xs">
+                          {t.intent || "Direct query"}
+                        </span>
+                        {t.route && (
+                          <span className="text-[10px] text-slate-400 font-mono">
+                            {t.route}
+                          </span>
+                        )}
+                      </div>
                     </td>
 
-                    <td className="py-3 font-mono text-slate-300">
+                    {/* 4. Latency */}
+                    <td className="py-3 font-mono text-slate-300 whitespace-nowrap">
                       {latencyStr}
                     </td>
 
-                    <td className="py-3 font-mono text-slate-300">
+                    {/* 5. Tokens */}
+                    <td className="py-3 font-mono text-slate-300 whitespace-nowrap">
                       {tokensStr}
                     </td>
 
-                    <td className="py-3">
+                    {/* 6. Status */}
+                    <td className="py-3 whitespace-nowrap">
                       <span className="inline-flex items-center gap-1.5 text-[11px] font-medium">
                         <span
                           className={`h-2 w-2 rounded-full ${
-                            isOk ? "bg-emerald-400" : isTimeout ? "bg-rose-500" : "bg-rose-500"
+                            isOk ? "bg-emerald-400" : isTimeout ? "bg-amber-400" : "bg-rose-500"
                           }`}
                         />
                         <span
                           className={
-                            isOk ? "text-emerald-400" : isTimeout ? "text-rose-400" : "text-rose-400"
+                            isOk ? "text-emerald-400" : isTimeout ? "text-amber-400" : "text-rose-400"
                           }
                         >
                           {isOk ? "OK" : isTimeout ? "Timeout" : "Error"}
                         </span>
                       </span>
+                    </td>
+
+                    {/* 7. Time */}
+                    <td className="py-3 pr-2 text-right font-mono text-slate-400 text-[11px] whitespace-nowrap">
+                      {timeStr}
                     </td>
                   </tr>
                 );

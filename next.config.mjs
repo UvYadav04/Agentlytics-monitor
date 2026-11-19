@@ -6,6 +6,10 @@ const nextConfig = {
   output: "standalone",
   poweredByHeader: false,
   basePath: basePath === "/" ? "" : basePath,
+  experimental: {
+    cpus: 1,
+    workerThreads: false,
+  },
 };
 
 export default nextConfig;

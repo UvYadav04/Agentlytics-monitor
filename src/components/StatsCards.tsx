@@ -23,9 +23,9 @@ export const StatsCards: React.FC<StatsCardsProps> = ({ metrics }) => {
 
   const cards = [
     {
-      title: "Investigations",
+      title: "Requests",
       value: totalTraces.toLocaleString(),
-      subtext: `${totalSpans.toLocaleString()} total spans traced`,
+      subtext: `${totalSpans.toLocaleString()} execution steps traced`,
       subtextColor: totalTraces > 0 ? "text-cyan-400" : "text-slate-500",
     },
     {
@@ -37,7 +37,7 @@ export const StatsCards: React.FC<StatsCardsProps> = ({ metrics }) => {
     {
       title: "Error Rate",
       value: `${errorRatePct.toFixed(2)}%`,
-      subtext: `${failedTracesCount} failed investigations`,
+      subtext: `${failedTracesCount} failed requests`,
       subtextColor: errorRatePct > 5 ? "text-amber-400" : errorRatePct > 0 ? "text-emerald-400" : "text-slate-500",
     },
     {

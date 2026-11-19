@@ -193,14 +193,14 @@ export default function MonitoringDashboard() {
             <div className="space-y-4">
               <div className="rounded-xl border border-[#1E293B] bg-[#0F172A] p-4 text-xs text-slate-300 flex items-center justify-between">
                 <div>
-                  <h2 className="text-sm font-semibold text-white">All Recorded Investigation Traces</h2>
+                  <h2 className="text-sm font-semibold text-white">All Recorded User Requests</h2>
                   <p className="text-slate-400 mt-0.5">
-                    Click any trace to open the hierarchical waterfall view with full token metrics and tool execution outputs
+                    Click any request to open the chronological execution path with full token metrics, collapsed steps, and markdown inputs/outputs
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="font-mono text-cyan-400 font-semibold">{telemetry.metrics.totalTraces}</span>
-                  <span className="text-slate-500">recorded traces in database</span>
+                  <span className="text-slate-500">recorded requests</span>
                 </div>
               </div>
 
@@ -359,13 +359,13 @@ export default function MonitoringDashboard() {
               <div className="rounded-xl border border-[#1E293B] bg-[#0F172A] p-5 space-y-3">
                 <div className="flex items-center justify-between">
                   <div>
-                    <h2 className="text-sm font-semibold text-white">Recorded Investigation Failures & Errors</h2>
+                    <h2 className="text-sm font-semibold text-white">Recorded Request Failures & Errors</h2>
                     <p className="text-xs text-slate-400 mt-0.5">
-                      Real failures captured in traces with error details and stack traces
+                      Real failures captured in requests with error details and stack traces
                     </p>
                   </div>
                   <span className="font-mono text-rose-400 text-xs font-semibold bg-rose-950/40 border border-rose-800/40 px-2.5 py-1 rounded-lg">
-                    {failedTraces.length} Failed Investigations
+                    {failedTraces.length} Failed Requests
                   </span>
                 </div>
 
