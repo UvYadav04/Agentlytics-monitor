@@ -609,19 +609,21 @@ export function queryTracesListFromDb(limit = 50, offset = 0, status?: string): 
 /**
  * Deletes all spans associated with the specified trace IDs or investigation IDs.
  */
-export function deleteTracesFromDb(traceIds: string[]): { success: boolean; deletedCount: number } {
+export function deleteTracesFromDb(traceIds: string[]): { success: boolean; deletedCount: number; error?: string } {
   if (!traceIds || traceIds.length === 0) return { success: true, deletedCount: 0 };
 
   const dbPath = resolveTracesDbPath();
   if (!dbPath) {
-    console.error("deleteTracesFromDb failed: traces.db not found on any known path.");
-    return { success: false, deletedCount: 0 };
+    const msg = "traces.db not found on any known path";
+    console.error("deleteTracesFromDb failed:", msg);
+    return { success: false, deletedCount: 0, error: msg };
   }
 
   const DatabaseSync = getDatabaseSync();
   if (!DatabaseSync) {
-    console.error("deleteTracesFromDb failed: node:sqlite DatabaseSync not available.");
-    return { success: false, deletedCount: 0 };
+    const msg = "node:sqlite DatabaseSync not available in current Node runtime";
+    console.error("deleteTracesFromDb failed:", msg);
+    return { success: false, deletedCount: 0, error: msg };
   }
 
   try {
@@ -665,8 +667,9 @@ export function deleteTracesFromDb(traceIds: string[]): { success: boolean; dele
     } catch {}
 
     return { success: true, deletedCount: totalDeleted };
-  } catch (err) {
-    console.error(`Failed to delete traces from db at ${dbPath}:`, err);
-    return { success: false, deletedCount: 0 };
+  } catch (err: any) {
+    const msg = err?.message || String(err);
+    console.error(`Failed to delete traces from db at ${dbPath}:`, msg);
+    return { success: false, deletedCount: 0, error: msg };
   }
 }

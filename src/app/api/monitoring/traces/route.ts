@@ -106,7 +106,7 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json(
         {
           success: false,
-          error: "Failed to delete traces from SQLite storage and backend API was unreachable. Ensure traces volume is mounted read-write.",
+          error: `Failed to delete traces. SQLite error: ${dbResult.error || "Unknown"}. Backend API was unreachable. Ensure traces volume is mounted read-write and directory has write permissions.`,
         },
         { status: 500 }
       );

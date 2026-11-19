@@ -1,26 +1,32 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useMemo, useState } from "react";
 import {
   AlertOctagon,
   AlertTriangle,
   ArrowDownRight,
+  ArrowRight,
+  Bot,
   Bug,
   Check,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
   Clock,
+  Code,
   Coins,
   Copy,
   Cpu,
   Database,
   ExternalLink,
   FileText,
+  Filter,
   Layers,
   Search,
   Sparkles,
+  Terminal,
   User,
+  Wrench,
   X,
 } from "lucide-react";
 import { MarkdownViewer } from "@/components/MarkdownViewer";
@@ -34,33 +40,300 @@ interface TraceInspectorModalProps {
   onClose: () => void;
 }
 
+export interface AgentExecutionStage {
+  id: string;
+  stageNumber: number;
+  stageType: "orchestrator" | "subagent" | "synthesis" | "step";
+  title: string;
+  subtitle: string;
+  caller: string;
+  badgeLabel: string;
+  badgeColor: { bg: string; text: string; border: string; dot?: string };
+  component: string;
+  startTime: number;
+  endTime: number;
+  durationMs: number;
+  totalTokens: number;
+  inputs: any;
+  outputs: any;
+  mainSpan: SpanRecord;
+  subSteps: SpanRecord[];
+}
+
+function formatOffset(startTime: number, minStart: number): string {
+  const diffSec = Math.max(0, startTime - minStart);
+  const mins = Math.floor(diffSec / 60);
+  const secs = (diffSec % 60).toFixed(2);
+  if (mins > 0) {
+    return `+${mins}m ${secs}s`;
+  }
+  return `+${secs}s`;
+}
+
+function formatClockTime(epochSec: number): string {
+  if (!epochSec || epochSec <= 0) return "";
+  try {
+    const d = new Date(epochSec * 1000);
+    return d.toLocaleTimeString([], { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Organizes raw spans into clean, deduplicated, chronological Agent Execution Stages:
+ * 1. Deduplicates delegator wrapper spans (invoke_tabular_agent) when actual agent run (tabular_agent_run) exists.
+ * 2. Structures order: First Orchestrator (caller: User Request) -> Sub-agents (caller: Orchestrator) -> Synthesis.
+ * 3. Clearly attributes inputs, outputs, start/end timestamps, latency, and nested sub-steps.
+ */
+function buildOrderedAgentStages(allSpans: SpanRecord[]): {
+  stages: AgentExecutionStage[];
+  redundantInvokeIds: Set<string>;
+  displaySpans: SpanRecord[];
+} {
+  if (!allSpans || allSpans.length === 0) {
+    return { stages: [], redundantInvokeIds: new Set(), displaySpans: [] };
+  }
+
+  // 1. Identify agent runs vs delegator tool wrappers
+  const agentRunSpans = allSpans.filter((s) =>
+    s.step_name.endsWith("_agent_run") ||
+    s.step_name === "tabular_agent_run" ||
+    s.step_name === "database_agent_run" ||
+    s.step_name === "document_agent_run" ||
+    s.step_name === "document_processor_run" ||
+    (s.step_type === "agent" && !s.step_name.startsWith("invoke_"))
+  );
+
+  const invokeSpans = allSpans.filter(
+    (s) => s.step_name.startsWith("invoke_") || s.component.includes(".tool.invoke_")
+  );
+
+  // Identify redundant wrapper calls to deduplicate (e.g. invoke_tabular_agent)
+  const redundantInvokeIds = new Set<string>();
+  const mergedAgentInputs: Record<string, any> = {};
+
+  for (const inv of invokeSpans) {
+    const targetName = inv.step_name.replace("invoke_", "").replace("_agent", "");
+    const matchingRun = agentRunSpans.find((ar) =>
+      ar.step_name.includes(targetName) ||
+      inv.component.includes(ar.component) ||
+      ar.parent_span_id === inv.span_id ||
+      (Math.abs(ar.start_time - inv.start_time) < 3 && Math.abs(ar.end_time - inv.end_time) < 3)
+    );
+    if (matchingRun) {
+      redundantInvokeIds.add(inv.span_id);
+      mergedAgentInputs[matchingRun.span_id] = {
+        ...(inv.inputs || {}),
+        ...(matchingRun.inputs || {}),
+      };
+    }
+  }
+
+  // Display spans without redundant delegators
+  const displaySpans = allSpans
+    .filter((s) => !redundantInvokeIds.has(s.span_id))
+    .sort((a, b) => (a.start_time ?? 0) - (b.start_time ?? 0));
+
+  // 2. Identify primary orchestrator
+  const orchestrator =
+    agentRunSpans.find(
+      (s) => s.step_name === "orchestrator_agent_run" || s.component === "agent.orchestrator"
+    ) || allSpans.find((s) => s.step_name === "orchestrator_agent_run" || s.component === "agent.orchestrator");
+
+  // 3. Sub-agents (excluding orchestrator)
+  const subAgents = agentRunSpans
+    .filter((s) => s.span_id !== orchestrator?.span_id)
+    .sort((a, b) => (a.start_time ?? 0) - (b.start_time ?? 0));
+
+  // Fallback for simple single-agent or flat traces
+  if (!orchestrator && subAgents.length === 0) {
+    const stages: AgentExecutionStage[] = displaySpans.map((s, idx) => ({
+      id: s.span_id,
+      stageNumber: idx + 1,
+      stageType: s.step_type === "agent" ? "subagent" : "step",
+      title: s.step_name,
+      subtitle: s.component,
+      caller: "Direct Request",
+      badgeLabel: s.step_type.toUpperCase(),
+      badgeColor: getStepTypeBadgeColor(s.step_type),
+      component: s.component,
+      startTime: s.start_time,
+      endTime: s.end_time,
+      durationMs: s.duration_ms,
+      totalTokens: s.total_tokens || 0,
+      inputs: s.inputs,
+      outputs: s.outputs,
+      mainSpan: s,
+      subSteps: [],
+    }));
+    return { stages, redundantInvokeIds, displaySpans };
+  }
+
+  const stages: AgentExecutionStage[] = [];
+  let stageNumber = 1;
+
+  // STAGE 1: Primary Orchestrator Agent
+  if (orchestrator) {
+    const firstSubStart = subAgents.length > 0 ? subAgents[0].start_time : Infinity;
+    // Direct orchestrator steps before first sub-agent
+    const orchInitialSteps = displaySpans.filter(
+      (s) =>
+        s.span_id !== orchestrator.span_id &&
+        !subAgents.some((sa) => sa.span_id === s.span_id) &&
+        s.end_time <= firstSubStart + 0.05
+    );
+
+    const initialTokens =
+      (orchestrator.total_tokens || 0) +
+      orchInitialSteps.reduce((acc, s) => acc + (s.total_tokens || 0), 0);
+
+    stages.push({
+      id: `stage-${orchestrator.span_id}`,
+      stageNumber: stageNumber++,
+      stageType: "orchestrator",
+      title: "Orchestrator Agent",
+      subtitle: "Primary Coordinator — Query decomposition, routing, and task delegation",
+      caller: "User Request",
+      badgeLabel: "PRIMARY ORCHESTRATOR",
+      badgeColor: {
+        bg: "bg-indigo-950/60",
+        text: "text-indigo-300",
+        border: "border-indigo-700/60",
+      },
+      component: orchestrator.component,
+      startTime: orchestrator.start_time,
+      endTime: orchestrator.end_time,
+      durationMs: orchestrator.duration_ms,
+      totalTokens: initialTokens,
+      inputs: orchestrator.inputs,
+      outputs: orchestrator.outputs,
+      mainSpan: orchestrator,
+      subSteps: orchInitialSteps,
+    });
+  }
+
+  // STAGE 2+: Sub-Agents (Tabular, Database, Document, etc.)
+  for (const sa of subAgents) {
+    const saSubSteps = displaySpans.filter(
+      (s) =>
+        s.span_id !== sa.span_id &&
+        !agentRunSpans.some((ar) => ar.span_id === s.span_id) &&
+        (s.parent_span_id === sa.span_id ||
+          (s.start_time >= sa.start_time - 0.05 && s.end_time <= sa.end_time + 0.1))
+    );
+
+    const saTokens =
+      (sa.total_tokens || 0) + saSubSteps.reduce((acc, s) => acc + (s.total_tokens || 0), 0);
+
+    let friendlyTitle = "Specialized Agent";
+    let friendlySubtitle = "Sub-agent analytical execution";
+    let badgeLabel = "SUB-AGENT";
+    let badgeColor = { bg: "bg-purple-950/60", text: "text-purple-300", border: "border-purple-700/60" };
+
+    const cLower = (sa.component + " " + sa.step_name).toLowerCase();
+    if (cLower.includes("tabular")) {
+      friendlyTitle = "Tabular Agent";
+      friendlySubtitle = "Tabular Analysis — Structured data investigation, DuckDB SQL queries, and statistics";
+      badgeLabel = "TABULAR AGENT";
+      badgeColor = { bg: "bg-cyan-950/60", text: "text-cyan-300", border: "border-cyan-700/60" };
+    } else if (cLower.includes("database") || cLower.includes("sql")) {
+      friendlyTitle = "Database Agent";
+      friendlySubtitle = "SQL Query Execution — Live database schema inspection and queries";
+      badgeLabel = "DATABASE AGENT";
+      badgeColor = { bg: "bg-amber-950/60", text: "text-amber-300", border: "border-amber-700/60" };
+    } else if (cLower.includes("document") || cLower.includes("rag")) {
+      friendlyTitle = "Document Agent";
+      friendlySubtitle = "Document RAG — Semantic vector search and text retrieval";
+      badgeLabel = "DOCUMENT AGENT";
+      badgeColor = { bg: "bg-emerald-950/60", text: "text-emerald-300", border: "border-emerald-700/60" };
+    }
+
+    stages.push({
+      id: `stage-${sa.span_id}`,
+      stageNumber: stageNumber++,
+      stageType: "subagent",
+      title: friendlyTitle,
+      subtitle: friendlySubtitle,
+      caller: "Delegated by Orchestrator Agent",
+      badgeLabel,
+      badgeColor,
+      component: sa.component,
+      startTime: sa.start_time,
+      endTime: sa.end_time,
+      durationMs: sa.duration_ms,
+      totalTokens: saTokens,
+      inputs: mergedAgentInputs[sa.span_id] || sa.inputs,
+      outputs: sa.outputs,
+      mainSpan: sa,
+      subSteps: saSubSteps,
+    });
+  }
+
+  // STAGE N: Follow-up / Response Synthesis
+  if (subAgents.length > 0 && orchestrator) {
+    const lastSubEnd = Math.max(...subAgents.map((s) => s.end_time));
+    const synthesisSteps = displaySpans.filter(
+      (s) =>
+        s.span_id !== orchestrator.span_id &&
+        !subAgents.some((sa) => sa.span_id === s.span_id) &&
+        s.start_time >= lastSubEnd - 0.05
+    );
+
+    if (synthesisSteps.length > 0) {
+      const synTokens = synthesisSteps.reduce((acc, s) => acc + (s.total_tokens || 0), 0);
+      const synDuration = synthesisSteps.reduce((acc, s) => acc + s.duration_ms, 0);
+
+      stages.push({
+        id: `stage-synthesis-${orchestrator.span_id}`,
+        stageNumber: stageNumber++,
+        stageType: "synthesis",
+        title: "Final Response Synthesis",
+        subtitle: "Orchestrator consolidates findings and delivers the final response",
+        caller: "Orchestrator Agent",
+        badgeLabel: "FINAL SYNTHESIS",
+        badgeColor: { bg: "bg-purple-950/60", text: "text-purple-300", border: "border-purple-700/60" },
+        component: orchestrator.component,
+        startTime: synthesisSteps[0].start_time,
+        endTime: synthesisSteps[synthesisSteps.length - 1].end_time,
+        durationMs: synDuration,
+        totalTokens: synTokens,
+        inputs: null,
+        outputs: orchestrator.outputs,
+        mainSpan: orchestrator,
+        subSteps: synthesisSteps,
+      });
+    }
+  }
+
+  return { stages, redundantInvokeIds, displaySpans };
+}
+
 export const TraceInspectorModal: React.FC<TraceInspectorModalProps> = ({ tree, onClose }) => {
   const [viewMode, setViewMode] = useState<"flow" | "waterfall" | "raw" | "error">("flow");
   const [copiedTrace, setCopiedTrace] = useState(false);
   const [copiedSection, setCopiedSection] = useState<string | null>(null);
-  // All steps start collapsed by default as requested
+
+  // Expanded stages & sub-steps state
+  const [expandedStages, setExpandedStages] = useState<Record<string, boolean>>({});
   const [expandedSpans, setExpandedSpans] = useState<Record<string, boolean>>({});
-  // Inline traceback collapsed by default to preserve maximum space for execution traces
   const [showInlineTraceback, setShowInlineTraceback] = useState(false);
 
   if (!tree) return null;
 
   const allSpans = tree.spans || [];
 
-  // Sort spans chronologically from first to latest
-  const sortedSpans = [...allSpans].sort((a, b) => {
-    const startA = a.start_time ?? 0;
-    const startB = b.start_time ?? 0;
-    if (startA !== startB) return startA - startB;
-    return (a.created_at || "").localeCompare(b.created_at || "");
-  });
+  // Build the clean, ordered, deduplicated stages
+  const { stages, redundantInvokeIds, displaySpans } = useMemo(() => {
+    return buildOrderedAgentStages(allSpans);
+  }, [allSpans]);
 
-  const minStart = sortedSpans.length > 0 ? Math.min(...sortedSpans.map((s) => s.start_time ?? 0)) : 0;
-  const maxEnd = sortedSpans.length > 0 ? Math.max(...sortedSpans.map((s) => s.end_time ?? 0)) : 1;
+  const minStart = allSpans.length > 0 ? Math.min(...allSpans.map((s) => s.start_time ?? 0)) : 0;
+  const maxEnd = allSpans.length > 0 ? Math.max(...allSpans.map((s) => s.end_time ?? 0)) : 1;
   const totalDurationMs = Math.max(1, (maxEnd - minStart) * 1000);
 
   // Check for error
-  const failedSpan = sortedSpans.find((s) => s.status === "error" || s.error);
+  const failedSpan = allSpans.find((s) => s.status === "error" || s.error);
   const hasError = !!failedSpan;
 
   // Extract meta and user query
@@ -69,7 +342,7 @@ export const TraceInspectorModal: React.FC<TraceInspectorModalProps> = ({ tree, 
   let route = "";
   let userId = "";
 
-  for (const s of sortedSpans) {
+  for (const s of allSpans) {
     if (!queryText) {
       if (s.inputs?.objective) queryText = String(s.inputs.objective);
       else if (s.inputs?.query) queryText = String(s.inputs.query);
@@ -94,28 +367,45 @@ export const TraceInspectorModal: React.FC<TraceInspectorModalProps> = ({ tree, 
     if (s.inputs?.user_id && !userId) userId = String(s.inputs.user_id);
   }
 
-  // Query fallback
   if (!queryText) {
     queryText = "Execution of data investigation pipeline";
   }
 
-  const totalTokens = sortedSpans.reduce((acc, s) => acc + (s.total_tokens || 0), 0);
-  const promptTokens = sortedSpans.reduce((acc, s) => acc + (s.prompt_tokens || 0), 0);
-  const completionTokens = sortedSpans.reduce((acc, s) => acc + (s.completion_tokens || 0), 0);
+  const totalTokens = allSpans.reduce((acc, s) => acc + (s.total_tokens || 0), 0);
+  const promptTokens = allSpans.reduce((acc, s) => acc + (s.prompt_tokens || 0), 0);
+  const completionTokens = allSpans.reduce((acc, s) => acc + (s.completion_tokens || 0), 0);
+
+  const toggleStage = (stageId: string) => {
+    setExpandedStages((prev) => {
+      const current = prev[stageId] ?? true;
+      return { ...prev, [stageId]: !current };
+    });
+  };
 
   const toggleSpan = (spanId: string) => {
     setExpandedSpans((prev) => ({ ...prev, [spanId]: !prev[spanId] }));
   };
 
   const expandAll = () => {
-    const allOpen: Record<string, boolean> = {};
-    sortedSpans.forEach((s) => {
-      allOpen[s.span_id] = true;
+    const allStagesOpen: Record<string, boolean> = {};
+    stages.forEach((st) => {
+      allStagesOpen[st.id] = true;
     });
-    setExpandedSpans(allOpen);
+    setExpandedStages(allStagesOpen);
+
+    const allSpansOpen: Record<string, boolean> = {};
+    displaySpans.forEach((s) => {
+      allSpansOpen[s.span_id] = true;
+    });
+    setExpandedSpans(allSpansOpen);
   };
 
   const collapseAll = () => {
+    const allStagesClosed: Record<string, boolean> = {};
+    stages.forEach((st) => {
+      allStagesClosed[st.id] = false;
+    });
+    setExpandedStages(allStagesClosed);
     setExpandedSpans({});
   };
 
@@ -127,6 +417,13 @@ export const TraceInspectorModal: React.FC<TraceInspectorModalProps> = ({ tree, 
 
   const jumpToSpan = (spanId: string) => {
     setViewMode("flow");
+    // Find stage containing span
+    const parentStage = stages.find(
+      (st) => st.mainSpan.span_id === spanId || st.subSteps.some((sub) => sub.span_id === spanId)
+    );
+    if (parentStage) {
+      setExpandedStages((prev) => ({ ...prev, [parentStage.id]: true }));
+    }
     setExpandedSpans((prev) => ({ ...prev, [spanId]: true }));
     setTimeout(() => {
       const el = document.getElementById(`span-${spanId}`);
@@ -204,14 +501,14 @@ export const TraceInspectorModal: React.FC<TraceInspectorModalProps> = ({ tree, 
           </button>
         </div>
 
-        {/* 2. Executive Metrics Strip & Prominent User Query at the Top (max-h constrained so traces below always have space) */}
+        {/* 2. Executive Metrics Strip & Prominent User Query at the Top */}
         <div className="border-b border-[#1E293B] bg-[#0C1425] p-4 sm:p-5 space-y-3 sm:space-y-4 max-h-[44vh] overflow-y-auto shrink-0">
           {/* USER QUERY VISIBLE AT TOP */}
           <div className="rounded-xl border border-cyan-500/30 bg-[#071329] p-3 sm:p-4 shadow-sm">
             <div className="flex items-center justify-between mb-1.5">
               <span className="text-[11px] font-bold uppercase tracking-wider text-cyan-400 flex items-center gap-2">
                 <Search className="h-3.5 w-3.5 text-cyan-400" />
-                User Query / Request Objective
+                User Request Objective
               </span>
               {queryText && (
                 <button
@@ -223,7 +520,7 @@ export const TraceInspectorModal: React.FC<TraceInspectorModalProps> = ({ tree, 
               )}
             </div>
             <p className="text-xs sm:text-sm font-semibold text-white leading-relaxed font-sans">
-              {queryText || "Investigation Pipeline Execution"}
+              {queryText}
             </p>
           </div>
 
@@ -249,9 +546,9 @@ export const TraceInspectorModal: React.FC<TraceInspectorModalProps> = ({ tree, 
             </div>
 
             <div className="rounded-lg border border-[#1E293B] bg-[#0F172A] p-2 sm:p-2.5">
-              <span className="text-[10px] font-semibold uppercase text-slate-400 block">Execution Steps</span>
+              <span className="text-[10px] font-semibold uppercase text-slate-400 block">Execution Stages</span>
               <span className="text-sm sm:text-base font-bold font-mono text-white">
-                {sortedSpans.length} steps recorded
+                {stages.length} agent stage{stages.length === 1 ? "" : "s"}
               </span>
             </div>
 
@@ -267,7 +564,7 @@ export const TraceInspectorModal: React.FC<TraceInspectorModalProps> = ({ tree, 
             </div>
           </div>
 
-          {/* Failure Alert Box - Sleek, compact and informative with collapsible/expandable traceback */}
+          {/* Failure Alert Box */}
           {hasError && failedSpan?.error && (
             <div className="rounded-xl border border-rose-600/50 bg-rose-950/25 p-3.5 sm:p-4 space-y-2.5 shadow-lg shadow-rose-950/20">
               <div className="flex flex-wrap items-center justify-between gap-2">
@@ -276,23 +573,20 @@ export const TraceInspectorModal: React.FC<TraceInspectorModalProps> = ({ tree, 
                     <AlertTriangle className="h-3.5 w-3.5 text-rose-400" />
                   </div>
                   <span className="text-xs sm:text-sm font-bold text-rose-300">
-                    Pipeline Execution Failure:{" "}
+                    Execution Failure:{" "}
                     <span className="text-white font-mono">{failedSpan.error.type || "Error"}</span>
                   </span>
                 </div>
 
                 <div className="flex flex-wrap items-center gap-1.5">
-                  {/* Step Pill & Quick Jump to Step */}
                   <button
                     onClick={() => jumpToSpan(failedSpan.span_id)}
                     className="inline-flex items-center gap-1 text-[11px] font-mono px-2 py-0.5 rounded bg-rose-900/40 hover:bg-rose-900/70 text-rose-200 border border-rose-700/50 transition-colors"
-                    title="Jump to this step in the flow"
                   >
                     <span>Step: <strong className="text-white">{failedSpan.step_name}</strong></span>
                     <ArrowDownRight className="h-3 w-3 text-rose-400" />
                   </button>
 
-                  {/* Copy Error Message */}
                   <button
                     onClick={() => copyToClipboard(failedSpan.error!.message, "err_msg")}
                     className="text-[10px] text-rose-300 hover:text-white font-mono px-2 py-0.5 rounded bg-black/40 border border-rose-800/40 transition-colors"
@@ -300,7 +594,6 @@ export const TraceInspectorModal: React.FC<TraceInspectorModalProps> = ({ tree, 
                     {copiedSection === "err_msg" ? "Copied!" : "Copy Error"}
                   </button>
 
-                  {/* Inline Traceback Toggle Button */}
                   {failedSpan.error.traceback && (
                     <button
                       onClick={() => setShowInlineTraceback((prev) => !prev)}
@@ -319,27 +612,13 @@ export const TraceInspectorModal: React.FC<TraceInspectorModalProps> = ({ tree, 
                       )}
                     </button>
                   )}
-
-                  {/* Open in Dedicated Tab */}
-                  {failedSpan.error.traceback && (
-                    <button
-                      onClick={() => setViewMode("error")}
-                      className="inline-flex items-center gap-1 text-[10px] text-cyan-300 hover:text-cyan-100 font-mono px-2 py-0.5 rounded bg-cyan-950/40 hover:bg-cyan-900/50 border border-cyan-700/40 transition-colors"
-                      title="Inspect full traceback view"
-                    >
-                      <span>Full Inspector</span>
-                      <ExternalLink className="h-3 w-3" />
-                    </button>
-                  )}
                 </div>
               </div>
 
-              {/* Error Message Box */}
               <div className="text-xs text-rose-200 font-mono bg-black/40 p-2.5 rounded-lg border border-rose-900/40 break-words leading-relaxed max-h-24 overflow-y-auto">
                 {failedSpan.error.message}
               </div>
 
-              {/* Inline Collapsible Traceback */}
               {showInlineTraceback && failedSpan.error.traceback && (
                 <div className="pt-1">
                   <TracebackViewer
@@ -357,7 +636,7 @@ export const TraceInspectorModal: React.FC<TraceInspectorModalProps> = ({ tree, 
         {/* 3. Navigation View Switcher & Accordion Controls */}
         <div className="flex items-center justify-between border-b border-[#1E293B] bg-[#070C19] px-6 py-2.5 shrink-0">
           <div className="flex items-center gap-3">
-            <span className="text-xs font-semibold text-white">Execution Steps (First to Latest):</span>
+            <span className="text-xs font-semibold text-white">Execution Flow (Ordered by Agent):</span>
             <div className="flex items-center gap-1.5">
               <button
                 onClick={expandAll}
@@ -383,7 +662,7 @@ export const TraceInspectorModal: React.FC<TraceInspectorModalProps> = ({ tree, 
                   : "text-slate-400 hover:text-slate-200"
               }`}
             >
-              Steps Flow
+              Agent Flow (Ordered)
             </button>
             <button
               onClick={() => setViewMode("waterfall")}
@@ -421,43 +700,35 @@ export const TraceInspectorModal: React.FC<TraceInspectorModalProps> = ({ tree, 
           </div>
         </div>
 
-        {/* 4. Modal Body: Tool & Agent Detailed Steps (ALWAYS HAS AMPLE SPACE) */}
-        <div className="flex-1 overflow-y-auto p-6 space-y-4 min-h-0">
-          {/* VIEW 1: TOOL & AGENT FLOW - CHRONOLOGICAL, COLLAPSED, VERTICAL FULL-WIDTH MARKDOWN */}
+        {/* 4. Modal Body: Tool & Agent Detailed Steps */}
+        <div className="flex-1 overflow-y-auto p-6 space-y-5 min-h-0">
+          {/* VIEW 1: DEDUPLICATED, HIERARCHICAL, ORDERED AGENT EXECUTION STAGES */}
           {viewMode === "flow" && (
-            <div className="space-y-3">
-              {sortedSpans.map((span, idx) => {
-                const badge = getStepTypeBadgeColor(span.step_type);
-                // Each step is collapsed by default
-                const isExpanded = !!expandedSpans[span.span_id];
-                const isError = span.status === "error" || !!span.error;
-                const pct = Math.min(100, Math.max(1, (span.duration_ms / totalDurationMs) * 100));
+            <div className="space-y-4">
+              {stages.map((stage) => {
+                const isExpanded = expandedStages[stage.id] ?? true;
+                const pct = Math.min(100, Math.max(1, (stage.durationMs / totalDurationMs) * 100));
+                const startOffsetStr = formatOffset(stage.startTime, minStart);
+                const endOffsetStr = formatOffset(stage.endTime, minStart);
+                const clockStart = formatClockTime(stage.startTime);
+                const clockEnd = formatClockTime(stage.endTime);
 
-                const inputMarkdown = formatPayloadToMarkdown(span.inputs, true);
-                const outputMarkdown = formatPayloadToMarkdown(
-                  span.outputs || (span.error ? { error: span.error } : null),
-                  false
-                );
+                const inputMarkdown = formatPayloadToMarkdown(stage.inputs, true);
+                const outputMarkdown = formatPayloadToMarkdown(stage.outputs, false);
+                const hasSubSteps = stage.subSteps.length > 0;
 
                 return (
                   <div
-                    key={span.span_id}
-                    id={`span-${span.span_id}`}
-                    className={`rounded-xl border transition-all ${
-                      isError
-                        ? "border-rose-600/70 bg-rose-950/15 shadow-md shadow-rose-950/20"
-                        : isExpanded
-                        ? "border-cyan-500/40 bg-[#0F172A] shadow-md"
-                        : "border-[#1E293B] bg-[#0F172A] hover:border-slate-700"
-                    }`}
+                    key={stage.id}
+                    id={`stage-${stage.id}`}
+                    className="rounded-xl border border-[#1E293B] bg-[#0F172A] shadow-md transition-all overflow-hidden"
                   >
-                    {/* Step Card Header - Click to toggle collapse */}
+                    {/* Stage Header Card */}
                     <div
-                      onClick={() => toggleSpan(span.span_id)}
-                      className="flex flex-col gap-2 p-3.5 sm:flex-row sm:items-center sm:justify-between cursor-pointer select-none"
+                      onClick={() => toggleStage(stage.id)}
+                      className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between cursor-pointer select-none bg-[#0D1527] hover:bg-[#111D35] transition-colors border-b border-[#1E293B]/60"
                     >
                       <div className="flex items-center gap-3">
-                        {/* Chevron collapse indicator */}
                         <div className="text-slate-400 hover:text-white transition-transform">
                           {isExpanded ? (
                             <ChevronDown className="h-4 w-4 text-cyan-400" />
@@ -466,151 +737,269 @@ export const TraceInspectorModal: React.FC<TraceInspectorModalProps> = ({ tree, 
                           )}
                         </div>
 
-                        {/* Step Number in Chronological Order (1 to N) */}
-                        <span
-                          className={`flex h-6 w-6 items-center justify-center rounded-md border text-[11px] font-bold font-mono ${
-                            isError
-                              ? "bg-rose-950 border-rose-700 text-rose-400"
-                              : "bg-[#070C19] border-[#1E293B] text-cyan-400"
-                          }`}
-                        >
-                          {idx + 1}
+                        {/* Stage Number (1, 2, 3...) */}
+                        <span className="flex h-7 w-7 items-center justify-center rounded-lg border bg-[#070C19] border-[#1E293B] text-xs font-bold font-mono text-cyan-400">
+                          {stage.stageNumber}
                         </span>
 
-                        {/* Step Type Badge */}
+                        {/* Stage Badge Label */}
                         <span
-                          className={`rounded px-2 py-0.5 text-[10px] font-bold uppercase border ${badge.bg} ${badge.text} ${badge.border}`}
+                          className={`rounded px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider border ${stage.badgeColor.bg} ${stage.badgeColor.text} ${stage.badgeColor.border}`}
                         >
-                          {span.step_type}
+                          {stage.badgeLabel}
                         </span>
-
-                        {/* Failed Indicator Badge */}
-                        {isError && (
-                          <span className="rounded px-2 py-0.5 text-[10px] font-bold uppercase bg-rose-950 text-rose-300 border border-rose-600/80 flex items-center gap-1 shadow-sm">
-                            <AlertTriangle className="h-3 w-3 text-rose-400" />
-                            Failed
-                          </span>
-                        )}
 
                         <div>
                           <div className="flex items-center gap-2">
-                            <h4 className="font-semibold text-white text-xs sm:text-sm">
-                              {span.step_name}
-                            </h4>
-                            <span className="font-mono text-[11px] text-slate-500">
-                              ({span.component})
+                            <h3 className="font-bold text-white text-sm sm:text-base">
+                              {stage.title}
+                            </h3>
+                            <span className="font-mono text-xs text-slate-500">
+                              ({stage.component})
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2 mt-0.5 text-[11px] text-slate-400">
+                            <span className="text-cyan-400/90 font-medium">{stage.caller}</span>
+                            <span>•</span>
+                            <span className="truncate max-w-[280px] sm:max-w-md text-slate-400">
+                              {stage.subtitle}
                             </span>
                           </div>
                         </div>
                       </div>
 
-                      {/* Right side: Latency, Tokens & Share */}
-                      <div className="flex items-center gap-3 font-mono text-xs justify-end">
-                        {span.ttft_ms && (
-                          <span className="text-[10px] text-amber-400 bg-amber-950/40 px-2 py-0.5 rounded border border-amber-800/40">
-                            TTFT: {span.ttft_ms} ms
+                      {/* Right side: Timing, Latency & Percentage */}
+                      <div className="flex flex-col sm:items-end gap-1 font-mono text-xs pl-10 sm:pl-0">
+                        <div className="flex items-center gap-2.5">
+                          {stage.totalTokens > 0 && (
+                            <span className="text-slate-400 text-[11px]">
+                              {stage.totalTokens.toLocaleString()} tokens
+                            </span>
+                          )}
+                          <span className="font-bold text-cyan-400 text-sm">
+                            {formatDuration(stage.durationMs)}
                           </span>
-                        )}
-
-                        {span.total_tokens > 0 && (
-                          <span className="text-slate-400">
-                            {span.total_tokens.toLocaleString()} tokens
+                          <span className="text-[11px] text-slate-500">
+                            ({pct.toFixed(1)}%)
                           </span>
-                        )}
-
-                        <span
-                          className={`font-bold ${
-                            isError ? "text-rose-400" : "text-cyan-400"
-                          }`}
-                        >
-                          {formatDuration(span.duration_ms)}
-                        </span>
-
-                        <span className="text-[11px] text-slate-500">
-                          ({pct.toFixed(1)}%)
-                        </span>
+                        </div>
+                        <div className="text-[10px] text-slate-500 flex items-center gap-1.5">
+                          <span>Start: <strong className="text-slate-300">{startOffsetStr}</strong> {clockStart && `(${clockStart})`}</span>
+                          <span>→</span>
+                          <span>End: <strong className="text-slate-300">{endOffsetStr}</strong> {clockEnd && `(${clockEnd})`}</span>
+                        </div>
                       </div>
                     </div>
 
-                    {/* Step Body: VERTICAL FULL-WIDTH LAYOUT WITH MARKDOWN RENDERING */}
+                    {/* Stage Body */}
                     {isExpanded && (
-                      <div className="flex flex-col gap-4 w-full p-5 bg-[#070C19]/90 border-t border-[#1E293B]">
-                        {/* Visual Duration Bar */}
-                        <div className="h-1 w-full bg-[#1E293B] rounded-full overflow-hidden">
+                      <div className="p-5 space-y-5 bg-[#070C19]/80">
+                        {/* Visual Timeline Bar */}
+                        <div className="h-1.5 w-full bg-[#1E293B] rounded-full overflow-hidden">
                           <div
-                            className={`h-full ${isError ? "bg-rose-500" : "bg-cyan-500"}`}
+                            className="h-full bg-cyan-500 rounded-full"
                             style={{ width: `${pct}%` }}
                           />
                         </div>
 
-                        {/* Error Banner & Traceback if Span has Error */}
-                        {isError && span.error && (
-                          <div className="rounded-xl border border-rose-600/50 bg-rose-950/20 p-4 space-y-3">
-                            <div className="flex items-center justify-between">
-                              <div className="font-bold text-rose-300 text-xs sm:text-sm flex items-center gap-2">
-                                <AlertTriangle className="h-4 w-4 text-rose-400" />
-                                <span>Step Failed: {span.error.type || "Execution Error"}</span>
-                              </div>
+                        {/* Timing Summary Strip */}
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-3 rounded-lg bg-[#0A101D] border border-[#1E293B] text-xs font-mono">
+                          <div>
+                            <span className="text-[10px] text-slate-500 uppercase block font-sans">Who took call</span>
+                            <span className="text-white font-semibold truncate block">{stage.title}</span>
+                          </div>
+                          <div>
+                            <span className="text-[10px] text-slate-500 uppercase block font-sans">When call started</span>
+                            <span className="text-cyan-400">{startOffsetStr} {clockStart && `(${clockStart})`}</span>
+                          </div>
+                          <div>
+                            <span className="text-[10px] text-slate-500 uppercase block font-sans">When call ended</span>
+                            <span className="text-slate-300">{endOffsetStr} {clockEnd && `(${clockEnd})`}</span>
+                          </div>
+                          <div>
+                            <span className="text-[10px] text-slate-500 uppercase block font-sans">Total Latency Taken</span>
+                            <span className="text-cyan-400 font-bold">{formatDuration(stage.durationMs)}</span>
+                          </div>
+                        </div>
+
+                        {/* 1. WHAT WAS INPUT TO THIS AGENT */}
+                        {stage.inputs && Object.keys(stage.inputs).length > 0 && (
+                          <div className="rounded-xl border border-[#1E293B] bg-[#0A101D] p-4 space-y-2">
+                            <div className="flex items-center justify-between pb-2 border-b border-[#1E293B]">
+                              <span className="text-xs font-bold uppercase tracking-wider text-cyan-400 flex items-center gap-2">
+                                <FileText className="h-3.5 w-3.5 text-cyan-400" />
+                                What was input to {stage.title}
+                              </span>
                               <button
-                                onClick={() => copyToClipboard(span.error!.message, `errmsg_${span.span_id}`)}
-                                className="text-[10px] text-rose-300 hover:text-white font-mono px-2 py-0.5 rounded bg-black/40 border border-rose-800/40 transition-colors"
+                                onClick={() => copyToClipboard(inputMarkdown, `inp_${stage.id}`)}
+                                className="text-[10px] text-slate-400 hover:text-cyan-400 font-mono px-2 py-0.5 rounded bg-[#070C19] border border-[#1E293B] transition-colors"
                               >
-                                {copiedSection === `errmsg_${span.span_id}` ? "Copied!" : "Copy Error"}
+                                {copiedSection === `inp_${stage.id}` ? "Copied!" : "Copy Input"}
                               </button>
                             </div>
-                            <p className="font-mono text-xs text-rose-200 bg-black/40 p-2.5 rounded-lg border border-rose-900/40 break-words leading-relaxed">
-                              {span.error.message}
-                            </p>
-                            {span.error.traceback && (
-                              <div className="pt-1">
-                                <TracebackViewer
-                                  traceback={span.error.traceback}
-                                  errorType={span.error.type}
-                                  errorMessage={span.error.message}
-                                  maxHeight="max-h-72"
-                                />
-                              </div>
-                            )}
+                            <div className="w-full pt-1">
+                              <MarkdownViewer content={inputMarkdown} />
+                            </div>
                           </div>
                         )}
 
-                        {/* VERTICAL FULL-WIDTH 1: INPUT IN MARKDOWN */}
-                        <div className="w-full rounded-xl border border-[#1E293B] bg-[#0A101D] p-4 space-y-2">
-                          <div className="flex items-center justify-between pb-2 border-b border-[#1E293B]">
-                            <span className="text-xs font-bold uppercase tracking-wider text-cyan-400 flex items-center gap-2">
-                              <FileText className="h-3.5 w-3.5 text-cyan-400" />
-                              Input
-                            </span>
-                            <button
-                              onClick={() => copyToClipboard(inputMarkdown, `inp_${span.span_id}`)}
-                              className="text-[10px] text-slate-400 hover:text-cyan-400 font-mono px-2 py-0.5 rounded bg-[#070C19] border border-[#1E293B] transition-colors"
-                            >
-                              {copiedSection === `inp_${span.span_id}` ? "Copied!" : "Copy Input"}
-                            </button>
+                        {/* 2. WHAT WAS OUTPUT FROM THIS AGENT */}
+                        {stage.outputs && Object.keys(stage.outputs).length > 0 && (
+                          <div className="rounded-xl border border-[#1E293B] bg-[#0A101D] p-4 space-y-2">
+                            <div className="flex items-center justify-between pb-2 border-b border-[#1E293B]">
+                              <span className="text-xs font-bold uppercase tracking-wider text-purple-400 flex items-center gap-2">
+                                <Sparkles className="h-3.5 w-3.5 text-purple-400" />
+                                What was output by {stage.title}
+                              </span>
+                              <button
+                                onClick={() => copyToClipboard(outputMarkdown, `out_${stage.id}`)}
+                                className="text-[10px] text-slate-400 hover:text-purple-400 font-mono px-2 py-0.5 rounded bg-[#070C19] border border-[#1E293B] transition-colors"
+                              >
+                                {copiedSection === `out_${stage.id}` ? "Copied!" : "Copy Output"}
+                              </button>
+                            </div>
+                            <div className="w-full pt-1">
+                              <MarkdownViewer content={outputMarkdown} />
+                            </div>
                           </div>
-                          <div className="w-full pt-1">
-                            <MarkdownViewer content={inputMarkdown} />
-                          </div>
-                        </div>
+                        )}
 
-                        {/* VERTICAL FULL-WIDTH 2: OUTPUT IN MARKDOWN */}
-                        <div className="w-full rounded-xl border border-[#1E293B] bg-[#0A101D] p-4 space-y-2">
-                          <div className="flex items-center justify-between pb-2 border-b border-[#1E293B]">
-                            <span className="text-xs font-bold uppercase tracking-wider text-purple-400 flex items-center gap-2">
-                              <Sparkles className="h-3.5 w-3.5 text-purple-400" />
-                              Output
-                            </span>
-                            <button
-                              onClick={() => copyToClipboard(outputMarkdown, `out_${span.span_id}`)}
-                              className="text-[10px] text-slate-400 hover:text-purple-400 font-mono px-2 py-0.5 rounded bg-[#070C19] border border-[#1E293B] transition-colors"
-                            >
-                              {copiedSection === `out_${span.span_id}` ? "Copied!" : "Copy Output"}
-                            </button>
+                        {/* 3. SUB-STEPS TAKEN DURING THIS STAGE */}
+                        {hasSubSteps && (
+                          <div className="space-y-3 pt-2">
+                            <div className="flex items-center justify-between">
+                              <span className="text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-2">
+                                <Layers className="h-3.5 w-3.5 text-cyan-400" />
+                                Sub-Steps Executed by {stage.title} ({stage.subSteps.length})
+                              </span>
+                            </div>
+
+                            <div className="space-y-2.5 pl-2 sm:pl-4 border-l-2 border-cyan-500/30">
+                              {stage.subSteps.map((sub, sIdx) => {
+                                const subBadge = getStepTypeBadgeColor(sub.step_type);
+                                const isSubExpanded = !!expandedSpans[sub.span_id];
+                                const isSubErr = sub.status === "error" || !!sub.error;
+                                const subInputMd = formatPayloadToMarkdown(sub.inputs, true);
+                                const subOutputMd = formatPayloadToMarkdown(
+                                  sub.outputs || (sub.error ? { error: sub.error } : null),
+                                  false
+                                );
+
+                                return (
+                                  <div
+                                    key={sub.span_id}
+                                    id={`span-${sub.span_id}`}
+                                    className={`rounded-lg border transition-all ${
+                                      isSubErr
+                                        ? "border-rose-600/60 bg-rose-950/20"
+                                        : isSubExpanded
+                                        ? "border-cyan-500/40 bg-[#0F172A]"
+                                        : "border-[#1E293B] bg-[#0A101D] hover:border-slate-700"
+                                    }`}
+                                  >
+                                    <div
+                                      onClick={() => toggleSpan(sub.span_id)}
+                                      className="flex flex-col gap-2 p-3 sm:flex-row sm:items-center sm:justify-between cursor-pointer select-none"
+                                    >
+                                      <div className="flex items-center gap-2.5">
+                                        <div className="text-slate-400 hover:text-white transition-transform">
+                                          {isSubExpanded ? (
+                                            <ChevronDown className="h-3.5 w-3.5 text-cyan-400" />
+                                          ) : (
+                                            <ChevronRight className="h-3.5 w-3.5" />
+                                          )}
+                                        </div>
+
+                                        <span className="font-mono text-[11px] font-bold text-slate-400">
+                                          {stage.stageNumber}.{sIdx + 1}
+                                        </span>
+
+                                        <span
+                                          className={`rounded px-1.5 py-0.2 text-[9px] font-bold uppercase border ${subBadge.bg} ${subBadge.text} ${subBadge.border}`}
+                                        >
+                                          {sub.step_type}
+                                        </span>
+
+                                        <div className="flex items-center gap-1.5">
+                                          <h4 className="font-semibold text-white text-xs">
+                                            {sub.step_name}
+                                          </h4>
+                                          <span className="font-mono text-[10px] text-slate-500">
+                                            ({sub.component})
+                                          </span>
+                                        </div>
+                                      </div>
+
+                                      <div className="flex items-center gap-2.5 font-mono text-xs justify-end pl-6 sm:pl-0">
+                                        {sub.ttft_ms && (
+                                          <span className="text-[10px] text-amber-400 bg-amber-950/40 px-1.5 py-0.2 rounded border border-amber-800/40">
+                                            TTFT: {sub.ttft_ms} ms
+                                          </span>
+                                        )}
+                                        {sub.total_tokens > 0 && (
+                                          <span className="text-[11px] text-slate-400">
+                                            {sub.total_tokens.toLocaleString()} tokens
+                                          </span>
+                                        )}
+                                        <span
+                                          className={`font-bold ${
+                                            isSubErr ? "text-rose-400" : "text-cyan-400"
+                                          }`}
+                                        >
+                                          {formatDuration(sub.duration_ms)}
+                                        </span>
+                                      </div>
+                                    </div>
+
+                                    {/* Sub-step Expanded Details */}
+                                    {isSubExpanded && (
+                                      <div className="p-4 space-y-3 bg-[#070C19] border-t border-[#1E293B]">
+                                        {/* Sub-step Error if present */}
+                                        {isSubErr && sub.error && (
+                                          <div className="rounded-lg border border-rose-600/50 bg-rose-950/30 p-3 text-xs font-mono text-rose-200">
+                                            {sub.error.message}
+                                          </div>
+                                        )}
+
+                                        {/* Sub-step Input */}
+                                        <div className="rounded-lg border border-[#1E293B] bg-[#0A101D] p-3 space-y-1.5">
+                                          <div className="flex items-center justify-between pb-1.5 border-b border-[#1E293B]">
+                                            <span className="text-[11px] font-bold uppercase tracking-wider text-cyan-400">
+                                              Input Payload
+                                            </span>
+                                            <button
+                                              onClick={() => copyToClipboard(subInputMd, `sub_in_${sub.span_id}`)}
+                                              className="text-[10px] text-slate-400 hover:text-cyan-400 font-mono px-2 py-0.5 rounded bg-[#070C19] border border-[#1E293B]"
+                                            >
+                                              {copiedSection === `sub_in_${sub.span_id}` ? "Copied!" : "Copy"}
+                                            </button>
+                                          </div>
+                                          <MarkdownViewer content={subInputMd} />
+                                        </div>
+
+                                        {/* Sub-step Output */}
+                                        <div className="rounded-lg border border-[#1E293B] bg-[#0A101D] p-3 space-y-1.5">
+                                          <div className="flex items-center justify-between pb-1.5 border-b border-[#1E293B]">
+                                            <span className="text-[11px] font-bold uppercase tracking-wider text-purple-400">
+                                              Output Result
+                                            </span>
+                                            <button
+                                              onClick={() => copyToClipboard(subOutputMd, `sub_out_${sub.span_id}`)}
+                                              className="text-[10px] text-slate-400 hover:text-purple-400 font-mono px-2 py-0.5 rounded bg-[#070C19] border border-[#1E293B]"
+                                            >
+                                              {copiedSection === `sub_out_${sub.span_id}` ? "Copied!" : "Copy"}
+                                            </button>
+                                          </div>
+                                          <MarkdownViewer content={subOutputMd} />
+                                        </div>
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
                           </div>
-                          <div className="w-full pt-1">
-                            <MarkdownViewer content={outputMarkdown} />
-                          </div>
-                        </div>
+                        )}
                       </div>
                     )}
                   </div>
@@ -619,7 +1008,7 @@ export const TraceInspectorModal: React.FC<TraceInspectorModalProps> = ({ tree, 
             </div>
           )}
 
-          {/* VIEW 2: WATERFALL (GANTT TIMELINE) */}
+          {/* VIEW 2: WATERFALL (GANTT TIMELINE WITH DEDUPLICATED DELEGATORS) */}
           {viewMode === "waterfall" && (
             <div className="overflow-x-auto rounded-xl border border-[#1E293B] bg-[#0F172A] p-4">
               <div className="min-w-[650px] space-y-2">
@@ -632,7 +1021,7 @@ export const TraceInspectorModal: React.FC<TraceInspectorModalProps> = ({ tree, 
                   </div>
                 </div>
 
-                {sortedSpans.map((s) => {
+                {displaySpans.map((s) => {
                   const badge = getStepTypeBadgeColor(s.step_type);
                   const isErr = s.status === "error" || !!s.error;
                   const startOffset = Math.max(0, ((s.start_time ?? 0) - minStart) * 1000);
@@ -711,7 +1100,6 @@ export const TraceInspectorModal: React.FC<TraceInspectorModalProps> = ({ tree, 
           {/* VIEW 4: DEDICATED ERROR & TRACEBACK INSPECTOR */}
           {viewMode === "error" && failedSpan?.error && (
             <div className="space-y-4">
-              {/* Failed Step Summary Card */}
               <div className="rounded-xl border border-rose-600/50 bg-rose-950/20 p-5 space-y-3">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div className="flex items-center gap-3">
@@ -757,7 +1145,6 @@ export const TraceInspectorModal: React.FC<TraceInspectorModalProps> = ({ tree, 
                 </div>
               </div>
 
-              {/* Full Traceback Component */}
               {failedSpan.error.traceback ? (
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
@@ -780,7 +1167,6 @@ export const TraceInspectorModal: React.FC<TraceInspectorModalProps> = ({ tree, 
                 </div>
               )}
 
-              {/* Step Input Context */}
               {failedSpan.inputs && Object.keys(failedSpan.inputs).length > 0 && (
                 <div className="rounded-xl border border-[#1E293B] bg-[#0F172A] p-4 space-y-2">
                   <span className="text-xs font-bold uppercase tracking-wider text-cyan-400 flex items-center gap-2">
