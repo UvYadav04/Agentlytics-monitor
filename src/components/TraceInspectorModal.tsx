@@ -130,10 +130,15 @@ function buildOrderedAgentStages(allSpans: SpanRecord[]): {
     }
   }
 
+  const getSpanOrder = (s: SpanRecord): number => {
+    if (s.tags && typeof s.tags.call_order === "number") return s.tags.call_order;
+    return s.start_time ?? 0;
+  };
+
   // Display spans without redundant delegators
   const displaySpans = allSpans
     .filter((s) => !redundantInvokeIds.has(s.span_id))
-    .sort((a, b) => (a.start_time ?? 0) - (b.start_time ?? 0));
+    .sort((a, b) => getSpanOrder(a) - getSpanOrder(b));
 
   // 2. Identify primary orchestrator
   const orchestrator =
@@ -144,7 +149,7 @@ function buildOrderedAgentStages(allSpans: SpanRecord[]): {
   // 3. Sub-agents (excluding orchestrator)
   const subAgents = agentRunSpans
     .filter((s) => s.span_id !== orchestrator?.span_id)
-    .sort((a, b) => (a.start_time ?? 0) - (b.start_time ?? 0));
+    .sort((a, b) => getSpanOrder(a) - getSpanOrder(b));
 
   // Fallback for simple single-agent or flat traces
   if (!orchestrator && subAgents.length === 0) {

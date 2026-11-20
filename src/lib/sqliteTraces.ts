@@ -432,7 +432,7 @@ export function queryTraceTreeFromDb(traceId: string): TraceTree | null {
         `SELECT * FROM spans 
          WHERE trace_id = ? 
             OR json_extract(tags_json, '$.investigation_id') = ?
-         ORDER BY start_time ASC`
+         ORDER BY COALESCE(json_extract(tags_json, '$.call_order'), 999999) ASC, start_time ASC`
       )
       .all(traceId, traceId) as any[];
     db.close();
