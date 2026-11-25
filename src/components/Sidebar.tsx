@@ -2,17 +2,15 @@
 
 import React from "react";
 import {
-  Activity,
   AlertTriangle,
+  BarChart3,
   ChevronDown,
   Cpu,
   Database,
   Layers,
   LayoutDashboard,
-  Radio,
   Search,
   Settings,
-  User,
   Zap,
 } from "lucide-react";
 
@@ -24,6 +22,7 @@ interface SidebarProps {
 export const Sidebar: React.FC<SidebarProps> = ({ activeNav, onSelectNav }) => {
   const navItems = [
     { id: "overview", label: "Overview", icon: LayoutDashboard },
+    { id: "analytics", label: "Analytics", icon: BarChart3 },
     { id: "requests", label: "Requests", icon: Layers },
     { id: "bottlenecks", label: "Bottlenecks", icon: Zap },
     { id: "models", label: "Models", icon: Cpu },

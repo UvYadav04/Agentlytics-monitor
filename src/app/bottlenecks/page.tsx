@@ -85,6 +85,7 @@ export default function BottlenecksPage() {
         activeNav={activeNav}
         onSelectNav={(nav) => {
           if (nav === "overview") router.push("/");
+          else if (nav === "analytics") router.push("/analytics");
           else if (nav === "requests") router.push("/requests");
           else if (nav === "bottlenecks") {
             // Already on bottlenecks

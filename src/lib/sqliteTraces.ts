@@ -4,7 +4,9 @@ import type {
   BreakdownStat,
   ComponentStat,
   DashboardTelemetry,
+  LatencyBucket,
   SpanRecord,
+  StepTimelinePoint,
   StepType,
   TelemetryFilters,
   TraceSummary,
@@ -138,6 +140,92 @@ function percentile(sorted: number[], p: number): number {
   return sorted[lo] + (sorted[hi] - sorted[lo]) * (idx - lo);
 }
 
+function buildStepTimeline(spans: LightSpanRow[]): StepTimelinePoint[] {
+  if (spans.length === 0) return [];
+
+  // Check distinct days first; if only 1 day, bucket by hour (YYYY-MM-DDTHH) for granular step trends
+  const distinctDays = new Set<string>();
+  for (const s of spans) {
+    const day = (s.created_at || "").slice(0, 10) || "Unknown";
+    distinctDays.add(day);
+  }
+  const useHourly = distinctDays.size <= 1;
+
+  const buckets = new Map<string, { durations: number[]; errorCount: number; totalCount: number }>();
+  for (const s of spans) {
+    const iso = s.created_at || "";
+    const key = useHourly ? iso.slice(0, 13) || "Unknown" : iso.slice(0, 10) || "Unknown";
+    if (!buckets.has(key)) {
+      buckets.set(key, { durations: [], errorCount: 0, totalCount: 0 });
+    }
+    const b = buckets.get(key)!;
+    b.totalCount++;
+    if (!isNaN(s.duration_ms) && s.duration_ms >= 0) {
+      b.durations.push(s.duration_ms);
+    }
+    if (s.status === "error") {
+      b.errorCount++;
+    }
+  }
+
+  return Array.from(buckets.keys())
+    .sort()
+    .map((key) => {
+      const b = buckets.get(key)!;
+      const sorted = [...b.durations].sort((a, bVal) => a - bVal);
+      const p50Ms = sorted.length > 0 ? Number(percentile(sorted, 0.5).toFixed(1)) : 0;
+      const p95Ms = sorted.length > 0 ? Number(percentile(sorted, 0.95).toFixed(1)) : 0;
+      const avgMs =
+        sorted.length > 0 ? Number((sorted.reduce((acc, v) => acc + v, 0) / sorted.length).toFixed(1)) : 0;
+      const errRate = b.totalCount > 0 ? Number(((b.errorCount / b.totalCount) * 100).toFixed(2)) : 0;
+
+      let label = key;
+      try {
+        if (useHourly && key.length >= 13) {
+          const dt = new Date(key + ":00:00Z");
+          label = dt.toLocaleTimeString("en-US", {
+            hour: "2-digit",
+            minute: "2-digit",
+            hour12: false,
+            timeZone: "UTC",
+          });
+        } else if (key.length >= 10) {
+          const dt = new Date(key + "T00:00:00Z");
+          label = dt.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+        }
+      } catch {}
+
+      return {
+        time: label,
+        date: key,
+        count: b.totalCount,
+        p50_ms: p50Ms,
+        avg_ms: avgMs,
+        p95_ms: p95Ms,
+        error_count: b.errorCount,
+        error_rate_pct: errRate,
+      };
+    });
+}
+
+function buildLatencyHistogram(durationsMs: number[]): LatencyBucket[] {
+  const buckets: LatencyBucket[] = [
+    { label: "<0.5s", count: 0 },
+    { label: "0.5–2s", count: 0 },
+    { label: "2–5s", count: 0 },
+    { label: "5–15s", count: 0 },
+    { label: ">15s", count: 0 },
+  ];
+  for (const ms of durationsMs) {
+    if (ms < 500) buckets[0].count++;
+    else if (ms < 2000) buckets[1].count++;
+    else if (ms < 5000) buckets[2].count++;
+    else if (ms < 15000) buckets[3].count++;
+    else buckets[4].count++;
+  }
+  return buckets;
+}
+
 function computeBreakdownStat(
   key: string,
   label: string,
@@ -163,6 +251,8 @@ function computeBreakdownStat(
       total_tokens: 0,
       total_prompt_tokens: 0,
       total_completion_tokens: 0,
+      timeline: [],
+      histogram: buildLatencyHistogram([]),
     };
   }
 
@@ -196,6 +286,8 @@ function computeBreakdownStat(
     total_tokens: totalTokens,
     total_prompt_tokens: promptTokens,
     total_completion_tokens: completionTokens,
+    timeline: buildStepTimeline(spans),
+    histogram: buildLatencyHistogram(durations),
   };
 }
 

@@ -102,6 +102,22 @@ export interface ComponentStat {
   total_completion_tokens: number;
 }
 
+export interface StepTimelinePoint {
+  time: string;
+  date: string;
+  count: number;
+  p50_ms: number;
+  avg_ms: number;
+  p95_ms: number;
+  error_count: number;
+  error_rate_pct: number;
+}
+
+export interface LatencyBucket {
+  label: string;
+  count: number;
+}
+
 export interface BreakdownStat {
   key: string;
   label: string;
@@ -119,6 +135,8 @@ export interface BreakdownStat {
   total_tokens: number;
   total_prompt_tokens: number;
   total_completion_tokens: number;
+  timeline?: StepTimelinePoint[];
+  histogram?: LatencyBucket[];
 }
 
 export interface TelemetryFilters {

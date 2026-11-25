@@ -4,13 +4,11 @@ import React, { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   AlertTriangle,
-  Bot,
-  Cpu,
+  ArrowRight,
+  BarChart3,
   Layers,
   Search,
   Sparkles,
-  Wrench,
-  Zap,
 } from "lucide-react";
 import { BottlenecksTable } from "@/components/BottlenecksTable";
 import { BreakdownErrorChart, BreakdownLatencyChart } from "@/components/BreakdownCharts";
@@ -37,7 +35,6 @@ export default function MonitoringDashboard() {
   const [timeRange, setTimeRange] = useState<string>(TIME_RANGE_OPTIONS[0].label);
   const [minDurationMs, setMinDurationMs] = useState<number | null>(null);
   const [maxDurationMs, setMaxDurationMs] = useState<number | null>(null);
-  const [llmViewMode, setLlmViewMode] = useState<"caller" | "provider">("caller");
   const [refreshInterval, setRefreshInterval] = useState<number>(30000);
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
   const [lastUpdatedText, setLastUpdatedText] = useState<string>("Updated just now");
@@ -52,10 +49,20 @@ export default function MonitoringDashboard() {
       router.push("/requests");
     } else if (nav === "bottlenecks") {
       router.push("/bottlenecks");
+    } else if (nav === "analytics") {
+      router.push("/analytics");
     } else {
       setActiveNav(nav);
     }
   };
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const tab = new URLSearchParams(window.location.search).get("tab");
+    if (tab && ["overview", "models", "retrieval", "services", "alerts", "settings"].includes(tab)) {
+      setActiveNav(tab);
+    }
+  }, []);
 
   // Load telemetry traces & stats with active filters
   const loadData = useCallback(async () => {
@@ -127,36 +134,11 @@ export default function MonitoringDashboard() {
 
   const traces = telemetry.recentTraces;
   const componentStats = telemetry.componentStats;
-  const agentStats = telemetry.agentStats || [];
   const toolStats = telemetry.toolStats || [];
   const llmStatsByCaller = telemetry.llmStatsByCaller || [];
   const llmStatsByProvider = telemetry.llmStatsByProvider || [];
-  const activeLlmStats = llmViewMode === "caller" ? llmStatsByCaller : llmStatsByProvider;
   const slowestSpans = telemetry.slowestSpans;
   const failedTraces = traces.filter((t) => t.status === "Error" || t.error_count > 0);
-
-  const llmModeSwitcher = (
-    <div className="flex items-center rounded-lg border border-[#1E293B] bg-[#070C19] p-0.5 text-[10px]">
-      <button
-        type="button"
-        onClick={() => setLlmViewMode("caller")}
-        className={`px-2 py-0.5 rounded font-semibold transition-colors ${
-          llmViewMode === "caller" ? "bg-indigo-500/25 text-indigo-300" : "text-slate-400 hover:text-white"
-        }`}
-      >
-        By Agent / Role
-      </button>
-      <button
-        type="button"
-        onClick={() => setLlmViewMode("provider")}
-        className={`px-2 py-0.5 rounded font-semibold transition-colors ${
-          llmViewMode === "provider" ? "bg-indigo-500/25 text-indigo-300" : "text-slate-400 hover:text-white"
-        }`}
-      >
-        By Provider
-      </button>
-    </div>
-  );
 
   // Component lookups for retrieval view
   const chromaStat = componentStats.find((s) => s.component === "rag.chroma");
@@ -208,6 +190,12 @@ export default function MonitoringDashboard() {
                 Overview
               </button>
               <button
+                onClick={() => router.push("/analytics")}
+                className="px-3 py-1 rounded-lg transition-all font-medium text-slate-400 hover:text-white"
+              >
+                Analytics
+              </button>
+              <button
                 onClick={() => router.push("/requests")}
                 className={`px-3 py-1 rounded-lg transition-all font-medium ${
                   activeNav === "requests" ? "bg-cyan-500/20 text-cyan-300 font-semibold" : "text-slate-400 hover:text-white"
@@ -240,127 +228,38 @@ export default function MonitoringDashboard() {
               {/* Row 1: Real Top KPI Metric Cards */}
               <StatsCards metrics={telemetry.metrics} />
 
-              {/* Row 2: Duration & Latency Filters */}
-              <DurationFilterBar
-                minDurationMs={minDurationMs}
-                maxDurationMs={maxDurationMs}
-                onChangeDurationRange={handleDurationRangeChange}
-                timeRangeLabel={timeRange}
-                matchingTracesCount={telemetry.metrics.totalTraces}
-                matchingSpansCount={telemetry.metrics.totalSpans}
-              />
-
-              {/* Row 3: 2 Side-by-Side Timeline Charts (Traffic + End-to-End p50 / Avg / p95) */}
+              {/* Row 2: 2 Side-by-Side Timeline Charts (Traffic + End-to-End p50 / Avg / p95) */}
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                 <RequestTrafficChart data={telemetry.timeline} />
                 <LatencyChart data={telemetry.timeline} />
               </div>
 
-              {/* Row 4: Agent Latencies (p50, Avg, p95) & Error Rates */}
-              <section className="space-y-2.5">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-purple-500/15 text-purple-400 border border-purple-500/25">
-                      <Bot className="h-4 w-4" />
-                    </div>
-                    <div>
-                      <h2 className="text-sm font-semibold text-white">Agent Latency &amp; Error Rate</h2>
-                      <p className="text-[11px] text-slate-400">
-                        Execution duration (p50, Average, p95) and failure rates for each pipeline agent
-                      </p>
-                    </div>
+              {/* Dedicated Analytics Charts Route Callout */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-xl border border-cyan-500/25 bg-[#0F172A] px-5 py-3.5 shadow-card">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-cyan-500/15 text-cyan-400 border border-cyan-500/25 shrink-0">
+                    <BarChart3 className="h-4 w-4" />
+                  </div>
+                  <div>
+                    <h2 className="text-xs sm:text-sm font-semibold text-white">
+                      Detailed Latency &amp; Error Rate Charts
+                    </h2>
+                    <p className="text-[11px] text-slate-400">
+                      Inspect p50, Average, p95 latencies, error rates, and duration filters for every Agent, Tool Call, and LLM Caller (Orchestrator, Tabular, Document, Database, Hypothesis)
+                    </p>
                   </div>
                 </div>
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                  <BreakdownLatencyChart
-                    title="Agent Latencies (p50 · Avg · p95)"
-                    subtitle="End-to-end execution latency per agent"
-                    items={agentStats}
-                  />
-                  <BreakdownErrorChart
-                    title="Agent Error Rates"
-                    subtitle="Percentage of failed invocations per agent"
-                    items={agentStats}
-                  />
-                </div>
-              </section>
+                <button
+                  type="button"
+                  onClick={() => router.push("/analytics")}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-cyan-500/20 border border-cyan-500/40 px-3.5 py-2 text-xs font-semibold text-cyan-300 hover:bg-cyan-500/30 transition-colors shrink-0 self-start sm:self-auto"
+                >
+                  <span>Open Analytics Charts</span>
+                  <ArrowRight className="h-3.5 w-3.5" />
+                </button>
+              </div>
 
-              {/* Row 5: LLM Calls Latencies (p50, Avg, p95) & Error Rates */}
-              <section className="space-y-2.5">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex items-center gap-2">
-                    <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-indigo-500/15 text-indigo-400 border border-indigo-500/25">
-                      <Sparkles className="h-4 w-4" />
-                    </div>
-                    <div>
-                      <h2 className="text-sm font-semibold text-white">LLM Call Latency &amp; Error Rate</h2>
-                      <p className="text-[11px] text-slate-400">
-                        All LLM calls broken down across Orchestrator, Tabular, Document, Database, and Hypothesis
-                      </p>
-                    </div>
-                  </div>
-                  {llmModeSwitcher}
-                </div>
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                  <BreakdownLatencyChart
-                    title={
-                      llmViewMode === "caller"
-                        ? "LLM Latencies by Caller (p50 · Avg · p95)"
-                        : "LLM Latencies by Provider (p50 · Avg · p95)"
-                    }
-                    subtitle={
-                      llmViewMode === "caller"
-                        ? "Orchestrator, Tabular, Document, Database & Hypothesis LLM calls"
-                        : "Latency distribution per LLM provider"
-                    }
-                    items={activeLlmStats}
-                  />
-                  <BreakdownErrorChart
-                    title={
-                      llmViewMode === "caller"
-                        ? "LLM Error Rates by Caller"
-                        : "LLM Error Rates by Provider"
-                    }
-                    subtitle={
-                      llmViewMode === "caller"
-                        ? "Failed LLM calls per pipeline role"
-                        : "Failed LLM calls per provider"
-                    }
-                    items={activeLlmStats}
-                  />
-                </div>
-              </section>
-
-              {/* Row 6: Tool Calls Latencies (p50, Avg, p95) & Error Rates */}
-              <section className="space-y-2.5">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-emerald-500/15 text-emerald-400 border border-emerald-500/25">
-                      <Wrench className="h-4 w-4" />
-                    </div>
-                    <div>
-                      <h2 className="text-sm font-semibold text-white">Tool Call Latency &amp; Error Rate</h2>
-                      <p className="text-[11px] text-slate-400">
-                        Individual SQL, Python sandbox, RAG retrieval, reranker, and visualization tool invocations
-                      </p>
-                    </div>
-                  </div>
-                </div>
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                  <BreakdownLatencyChart
-                    title="Tool Call Latencies (p50 · Avg · p95)"
-                    subtitle="Duration breakdown for every traced tool call"
-                    items={toolStats}
-                  />
-                  <BreakdownErrorChart
-                    title="Tool Call Error Rates"
-                    subtitle="Failure percentage and error counts per tool"
-                    items={toolStats}
-                  />
-                </div>
-              </section>
-
-              {/* Row 7: Split Layout (Left: Real Component Aggregations | Right: Recent Traces) */}
+              {/* Row 3: Split Layout (Left: Real Component Aggregations | Right: Recent Traces) */}
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
                 <div className="lg:col-span-6">
                   <ComponentStats stats={componentStats} />

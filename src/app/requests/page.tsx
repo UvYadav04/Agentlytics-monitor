@@ -93,6 +93,7 @@ export default function RequestsPage() {
         activeNav={activeNav}
         onSelectNav={(nav) => {
           if (nav === "overview") router.push("/");
+          else if (nav === "analytics") router.push("/analytics");
           else if (nav === "bottlenecks") router.push("/bottlenecks");
           else if (nav === "requests") {
             // Already on requests
