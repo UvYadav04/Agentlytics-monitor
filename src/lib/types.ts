@@ -90,6 +90,8 @@ export interface ComponentStat {
   step_type: StepType;
   component: string;
   total_calls: number;
+  p50_duration_ms: number;
+  p95_duration_ms: number;
   avg_duration_ms: number;
   min_duration_ms: number;
   max_duration_ms: number;
@@ -98,6 +100,31 @@ export interface ComponentStat {
   error_rate_pct: number;
   total_prompt_tokens: number;
   total_completion_tokens: number;
+}
+
+export interface BreakdownStat {
+  key: string;
+  label: string;
+  subtitle?: string;
+  category?: string;
+  total_calls: number;
+  p50_duration_ms: number;
+  p95_duration_ms: number;
+  avg_duration_ms: number;
+  min_duration_ms: number;
+  max_duration_ms: number;
+  avg_ttft_ms?: number | null;
+  error_count: number;
+  error_rate_pct: number;
+  total_tokens: number;
+  total_prompt_tokens: number;
+  total_completion_tokens: number;
+}
+
+export interface TelemetryFilters {
+  sinceHours?: number | null;
+  minDurationMs?: number | null;
+  maxDurationMs?: number | null;
 }
 
 export interface OverviewMetrics {
@@ -121,6 +148,9 @@ export interface ActivityPoint {
   count: number;
   p50?: number;
   p95?: number;
+  avg?: number;
+  errorCount?: number;
+  errorRate?: number;
 }
 
 export interface LatencyPoint {
@@ -128,12 +158,17 @@ export interface LatencyPoint {
   date?: string;
   p50: number;
   p95: number;
+  avg?: number;
 }
 
 export interface DashboardTelemetry {
   metrics: OverviewMetrics;
   timeline: ActivityPoint[];
   componentStats: ComponentStat[];
+  agentStats: BreakdownStat[];
+  toolStats: BreakdownStat[];
+  llmStatsByCaller: BreakdownStat[];
+  llmStatsByProvider: BreakdownStat[];
   recentTraces: TraceSummary[];
   slowestSpans: SpanRecord[];
 }

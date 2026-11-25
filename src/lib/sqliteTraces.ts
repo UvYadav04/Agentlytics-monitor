@@ -1,9 +1,12 @@
 import fs from "fs";
 import path from "path";
 import type {
+  BreakdownStat,
   ComponentStat,
   DashboardTelemetry,
   SpanRecord,
+  StepType,
+  TelemetryFilters,
   TraceSummary,
   TraceTree,
 } from "./types";
@@ -106,17 +109,223 @@ function rowToSpan(r: any): SpanRecord {
   };
 }
 
-export function queryDashboardOverviewFromDb(): DashboardTelemetry | null {
+interface LightSpanRow {
+  span_id: string;
+  trace_id: string;
+  parent_span_id: string | null;
+  step_name: string;
+  component: string;
+  step_type: StepType;
+  status: string;
+  start_time: number;
+  end_time: number;
+  duration_ms: number;
+  ttft_ms: number | null;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  tags: Record<string, any>;
+  created_at: string;
+}
+
+function percentile(sorted: number[], p: number): number {
+  if (sorted.length === 0) return 0;
+  if (sorted.length === 1) return sorted[0];
+  const idx = (sorted.length - 1) * p;
+  const lo = Math.floor(idx);
+  const hi = Math.ceil(idx);
+  if (lo === hi) return sorted[lo];
+  return sorted[lo] + (sorted[hi] - sorted[lo]) * (idx - lo);
+}
+
+function computeBreakdownStat(
+  key: string,
+  label: string,
+  spans: LightSpanRow[],
+  options?: { subtitle?: string; category?: string }
+): BreakdownStat {
+  const count = spans.length;
+  if (count === 0) {
+    return {
+      key,
+      label,
+      subtitle: options?.subtitle,
+      category: options?.category,
+      total_calls: 0,
+      p50_duration_ms: 0,
+      p95_duration_ms: 0,
+      avg_duration_ms: 0,
+      min_duration_ms: 0,
+      max_duration_ms: 0,
+      avg_ttft_ms: null,
+      error_count: 0,
+      error_rate_pct: 0,
+      total_tokens: 0,
+      total_prompt_tokens: 0,
+      total_completion_tokens: 0,
+    };
+  }
+
+  const durations = spans
+    .map((s) => s.duration_ms)
+    .filter((d) => !isNaN(d) && d >= 0)
+    .sort((a, b) => a - b);
+
+  const errorCount = spans.filter((s) => s.status === "error").length;
+  const ttfts = spans.map((s) => s.ttft_ms).filter((t): t is number => t !== null && !isNaN(t));
+  const promptTokens = spans.reduce((acc, s) => acc + s.prompt_tokens, 0);
+  const completionTokens = spans.reduce((acc, s) => acc + s.completion_tokens, 0);
+  const totalTokens = spans.reduce((acc, s) => acc + (s.total_tokens || s.prompt_tokens + s.completion_tokens), 0);
+
+  const avgMs = durations.length > 0 ? durations.reduce((a, b) => a + b, 0) / durations.length : 0;
+
+  return {
+    key,
+    label,
+    subtitle: options?.subtitle,
+    category: options?.category,
+    total_calls: count,
+    p50_duration_ms: Number(percentile(durations, 0.5).toFixed(1)),
+    p95_duration_ms: Number(percentile(durations, 0.95).toFixed(1)),
+    avg_duration_ms: Number(avgMs.toFixed(1)),
+    min_duration_ms: durations.length > 0 ? Number(durations[0].toFixed(1)) : 0,
+    max_duration_ms: durations.length > 0 ? Number(durations[durations.length - 1].toFixed(1)) : 0,
+    avg_ttft_ms: ttfts.length > 0 ? Number((ttfts.reduce((a, b) => a + b, 0) / ttfts.length).toFixed(1)) : null,
+    error_count: errorCount,
+    error_rate_pct: Number(((errorCount / count) * 100).toFixed(2)),
+    total_tokens: totalTokens,
+    total_prompt_tokens: promptTokens,
+    total_completion_tokens: completionTokens,
+  };
+}
+
+function classifyRoleFromText(text: string): "hypothesis" | "tabular" | "database" | "document" | "orchestrator" | null {
+  const t = text.toLowerCase();
+  if (t.includes("hypothes")) return "hypothesis";
+  if (t.includes("tabular") || t.includes("duckdb") || t.includes("run_python")) return "tabular";
+  if (t.includes("database") || t.includes("sql") || t.includes("execute_query") || t.includes("inspect_schema")) {
+    return "database";
+  }
+  if (t.includes("document") || t.includes("rag") || t.includes("chroma") || t.includes("rerank") || t.includes("verify_chunk")) {
+    return "document";
+  }
+  if (t.includes("orchestrator")) return "orchestrator";
+  return null;
+}
+
+function classifyLlmCaller(span: LightSpanRow, spanById: Map<string, LightSpanRow>): string {
+  // 1. Walk parent chain from immediate parent up to root (nearest caller wins)
+  const visited = new Set<string>([span.span_id]);
+  let currParentId = span.parent_span_id;
+  let hops = 0;
+
+  while (currParentId && hops < 12 && !visited.has(currParentId)) {
+    visited.add(currParentId);
+    const parent = spanById.get(currParentId);
+    if (!parent) break;
+
+    const parentText = `${parent.step_name} ${parent.component} ${parent.tags?.role || ""} ${parent.tags?.agent || ""}`;
+    const role = classifyRoleFromText(parentText);
+    if (role) return role;
+
+    currParentId = parent.parent_span_id;
+    hops++;
+  }
+
+  // 2. Check tags on the LLM span itself
+  const selfTagText = `${span.tags?.agent || ""} ${span.tags?.caller || ""} ${span.tags?.role || ""} ${span.tags?.pipeline_stage || ""}`;
+  const selfRole = classifyRoleFromText(selfTagText);
+  if (selfRole) return selfRole;
+
+  return "direct";
+}
+
+function classifyAgentKey(span: LightSpanRow): { key: string; label: string; subtitle: string } {
+  const txt = `${span.component} ${span.step_name}`.toLowerCase();
+  if (txt.includes("orchestrator")) {
+    return { key: "orchestrator", label: "Orchestrator", subtitle: "agent.orchestrator" };
+  }
+  if (txt.includes("tabular")) {
+    return { key: "tabular", label: "Tabular", subtitle: "agent.tabular" };
+  }
+  if (txt.includes("document")) {
+    return { key: "document", label: "Document", subtitle: "agent.document" };
+  }
+  if (txt.includes("database") || txt.includes("sql")) {
+    return { key: "database", label: "Database", subtitle: "agent.database" };
+  }
+  return {
+    key: span.component || span.step_name,
+    label: span.step_name || span.component,
+    subtitle: span.component,
+  };
+}
+
+function isToolCallSpan(span: LightSpanRow): boolean {
+  const stepName = (span.step_name || "").toLowerCase();
+  const component = (span.component || "").toLowerCase();
+  const stepType = (span.step_type || "").toLowerCase();
+
+  if (stepType === "agent" || stepType === "llm") return false;
+  // Exclude delegator wrappers that duplicate sub-agent runs
+  if (stepName.startsWith("invoke_") && stepName.endsWith("_agent")) return false;
+
+  if (["tool", "database", "sandbox", "retriever", "reranker", "router"].includes(stepType)) {
+    return true;
+  }
+  return (
+    component.startsWith("tool.") ||
+    component.startsWith("rag.") ||
+    component.startsWith("orchestrator.tool.")
+  );
+}
+
+export function queryDashboardOverviewFromDb(filters: TelemetryFilters = {}): DashboardTelemetry | null {
   const dbPath = resolveTracesDbPath();
   if (!dbPath) return null;
 
   const DatabaseSync = getDatabaseSync();
   if (!DatabaseSync) return null;
 
+  const sinceHours =
+    filters.sinceHours !== undefined && filters.sinceHours !== null && filters.sinceHours > 0
+      ? Number(filters.sinceHours)
+      : null;
+  const minDurationMs =
+    filters.minDurationMs !== undefined && filters.minDurationMs !== null && !isNaN(filters.minDurationMs)
+      ? Number(filters.minDurationMs)
+      : null;
+  const maxDurationMs =
+    filters.maxDurationMs !== undefined && filters.maxDurationMs !== null && !isNaN(filters.maxDurationMs)
+      ? Number(filters.maxDurationMs)
+      : null;
+
   try {
     const db = new DatabaseSync(dbPath, { readOnly: true });
 
-    // 1. Durations, error counts, days grouped by user request (investigation_id or multi-step request)
+    const cutoffSec = sinceHours ? Date.now() / 1000 - sinceHours * 3600 : null;
+    const whereClauses: string[] = [];
+    const whereParams: any[] = [];
+    if (cutoffSec !== null) {
+      whereClauses.push("t.start_time >= ?");
+      whereParams.push(cutoffSec);
+    }
+    const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(" AND ")}` : "";
+
+    const havingDurationClauses: string[] = [];
+    const havingDurationParams: any[] = [];
+    if (minDurationMs !== null) {
+      havingDurationClauses.push("((MAX(t.end_time) - MIN(t.start_time)) * 1000) >= ?");
+      havingDurationParams.push(minDurationMs);
+    }
+    if (maxDurationMs !== null) {
+      havingDurationClauses.push("((MAX(t.end_time) - MIN(t.start_time)) * 1000) <= ?");
+      havingDurationParams.push(maxDurationMs);
+    }
+    const havingDurationSql =
+      havingDurationClauses.length > 0 ? `AND ${havingDurationClauses.join(" AND ")}` : "";
+
+    // 1. Trace durations, error counts, days grouped by user request
     const traceQuery = `
       SELECT
         COALESCE(json_extract(t.tags_json, '$.investigation_id'), t.trace_id) as request_id,
@@ -124,6 +333,7 @@ export function queryDashboardOverviewFromDb(): DashboardTelemetry | null {
         SUM(CASE WHEN t.status = 'error' THEN 1 ELSE 0 END) as error_count,
         substr(MIN(t.created_at), 1, 10) as day
       FROM spans t
+      ${whereSql}
       GROUP BY request_id
       HAVING 
         NOT (
@@ -135,86 +345,110 @@ export function queryDashboardOverviewFromDb(): DashboardTelemetry | null {
             OR (SELECT s.step_name FROM spans s WHERE s.trace_id = t.trace_id LIMIT 1) LIKE 'inspect_%'
           )
         )
+        ${havingDurationSql}
     `;
-    const traceRows = db.prepare(traceQuery).all() as any[];
+    const traceRows = db.prepare(traceQuery).all(...whereParams, ...havingDurationParams) as any[];
     const totalTraces = traceRows.length;
-    if (totalTraces === 0) {
-      db.close();
-      return {
-        metrics: {
-          totalTraces: 0,
-          totalSpans: 0,
-          p50LatencySec: 0,
-          p95LatencySec: 0,
-          avgLatencySec: 0,
-          errorRatePct: 0,
-          failedTracesCount: 0,
-          totalTokens: 0,
-          inputTokens: 0,
-          outputTokens: 0,
-          llmCallsCount: 0,
-          databaseCallsCount: 0,
-        },
-        timeline: [],
-        componentStats: [],
-        slowestSpans: [],
-        recentTraces: [],
-      };
-    }
 
     const durations: number[] = [];
     let failedTraces = 0;
-    const daysDict: Record<string, number[]> = {};
+    const daysDict: Record<string, { durations: number[]; errorCount: number; totalCount: number }> = {};
 
     for (const r of traceRows) {
       const dur = Number(r.duration_s);
-      if (!isNaN(dur) && dur > 0) {
+      const day = r.day || "Unknown";
+      if (!daysDict[day]) daysDict[day] = { durations: [], errorCount: 0, totalCount: 0 };
+      daysDict[day].totalCount++;
+
+      if (!isNaN(dur) && dur >= 0) {
         durations.push(dur);
-        const day = r.day || "Unknown";
-        if (!daysDict[day]) daysDict[day] = [];
-        daysDict[day].push(dur);
+        daysDict[day].durations.push(dur);
       }
       if (Number(r.error_count) > 0) {
         failedTraces++;
+        daysDict[day].errorCount++;
       }
     }
 
     durations.sort((a, b) => a - b);
-    const p50 = durations.length > 0 ? Number(durations[Math.floor(durations.length * 0.5)].toFixed(2)) : 0;
-    const p95 = durations.length > 0 ? Number(durations[Math.floor(durations.length * 0.95)].toFixed(2)) : 0;
+    const p50 = durations.length > 0 ? Number(percentile(durations, 0.5).toFixed(2)) : 0;
+    const p95 = durations.length > 0 ? Number(percentile(durations, 0.95).toFixed(2)) : 0;
     const avgDur =
       durations.length > 0
         ? Number((durations.reduce((sum, v) => sum + v, 0) / durations.length).toFixed(2))
         : 0;
     const errorRatePct = totalTraces > 0 ? Number(((failedTraces / totalTraces) * 100).toFixed(2)) : 0;
 
-    // 2. Token counts & spans
-    const spanQuery = `
+    // 2. Load spans in time window for accurate parent attribution + percentile breakdowns
+    const spanWhereSql = cutoffSec !== null ? "WHERE start_time >= ?" : "";
+    const spanSelectSql = `
       SELECT
-        COUNT(*) as total_spans,
-        SUM(prompt_tokens) as total_prompt_tokens,
-        SUM(completion_tokens) as total_completion_tokens,
-        SUM(total_tokens) as total_tokens,
-        SUM(CASE WHEN step_type = 'llm' THEN 1 ELSE 0 END) as llm_calls,
-        SUM(CASE WHEN step_type = 'database' THEN 1 ELSE 0 END) as database_calls
+        span_id, trace_id, parent_span_id, step_name, component, step_type, status,
+        start_time, end_time, duration_ms, ttft_ms,
+        prompt_tokens, completion_tokens, total_tokens, tags_json, created_at
       FROM spans
+      ${spanWhereSql}
     `;
-    const spanRow = db.prepare(spanQuery).get() as any;
-    const totalSpans = Number(spanRow?.total_spans || 0);
-    const promptTokens = Number(spanRow?.total_prompt_tokens || 0);
-    const completionTokens = Number(spanRow?.total_completion_tokens || 0);
-    const totalTokens = Number(spanRow?.total_tokens || promptTokens + completionTokens);
-    const llmCalls = Number(spanRow?.llm_calls || 0);
-    const databaseCalls = Number(spanRow?.database_calls || 0);
+    const rawSpanRows = (cutoffSec !== null
+      ? db.prepare(spanSelectSql).all(cutoffSec)
+      : db.prepare(spanSelectSql).all()) as any[];
+
+    const allWindowSpans: LightSpanRow[] = rawSpanRows.map((r) => ({
+      span_id: r.span_id,
+      trace_id: r.trace_id,
+      parent_span_id: r.parent_span_id || null,
+      step_name: r.step_name || "",
+      component: r.component || "",
+      step_type: (r.step_type || "custom") as StepType,
+      status: r.status || "success",
+      start_time: Number(r.start_time || 0),
+      end_time: Number(r.end_time || 0),
+      duration_ms: Number(r.duration_ms || 0),
+      ttft_ms: r.ttft_ms !== null && r.ttft_ms !== undefined ? Number(r.ttft_ms) : null,
+      prompt_tokens: Number(r.prompt_tokens || 0),
+      completion_tokens: Number(r.completion_tokens || 0),
+      total_tokens: Number(r.total_tokens || 0),
+      tags: parseJsonSafe(r.tags_json, {}),
+      created_at: r.created_at || "",
+    }));
+
+    // Build parent lookup BEFORE duration filtering so child LLM calls keep their agent/hypothesis parent attribution
+    const spanById = new Map<string, LightSpanRow>();
+    for (const s of allWindowSpans) {
+      spanById.set(s.span_id, s);
+    }
+
+    // Apply duration filter to spans
+    const filteredSpans = allWindowSpans.filter((s) => {
+      if (minDurationMs !== null && s.duration_ms < minDurationMs) return false;
+      if (maxDurationMs !== null && s.duration_ms > maxDurationMs) return false;
+      return true;
+    });
+
+    const totalSpans = filteredSpans.length;
+    const promptTokens = filteredSpans.reduce((acc, s) => acc + s.prompt_tokens, 0);
+    const completionTokens = filteredSpans.reduce((acc, s) => acc + s.completion_tokens, 0);
+    const totalTokens = filteredSpans.reduce(
+      (acc, s) => acc + (s.total_tokens || s.prompt_tokens + s.completion_tokens),
+      0
+    );
+    const llmCalls = filteredSpans.filter((s) => s.step_type === "llm").length;
+    const databaseCalls = filteredSpans.filter((s) => s.step_type === "database").length;
 
     // 3. Timeline
     const timeline = Object.keys(daysDict)
       .sort()
       .map((day) => {
-        const sortedDay = daysDict[day].sort((a, b) => a - b);
-        const cnt = sortedDay.length;
-        const dP50 = cnt > 0 ? Number(sortedDay[Math.floor(cnt * 0.5)].toFixed(2)) : 0;
-        const dP95 = cnt > 0 ? Number(sortedDay[Math.floor(cnt * 0.95)].toFixed(2)) : 0;
+        const entry = daysDict[day];
+        const sortedDay = [...entry.durations].sort((a, b) => a - b);
+        const cnt = entry.totalCount;
+        const dP50 = sortedDay.length > 0 ? Number(percentile(sortedDay, 0.5).toFixed(2)) : 0;
+        const dP95 = sortedDay.length > 0 ? Number(percentile(sortedDay, 0.95).toFixed(2)) : 0;
+        const dAvg =
+          sortedDay.length > 0
+            ? Number((sortedDay.reduce((a, b) => a + b, 0) / sortedDay.length).toFixed(2))
+            : 0;
+        const dErrRate = cnt > 0 ? Number(((entry.errorCount / cnt) * 100).toFixed(2)) : 0;
         let label = day;
         try {
           const dt = new Date(day + "T00:00:00Z");
@@ -226,50 +460,166 @@ export function queryDashboardOverviewFromDb(): DashboardTelemetry | null {
           count: cnt,
           p50: dP50,
           p95: dP95,
+          avg: dAvg,
+          errorCount: entry.errorCount,
+          errorRate: dErrRate,
         };
       });
 
-    // 4. Component stats
-    const statsQuery = `
-      SELECT
-        step_type,
-        component,
-        COUNT(*) as total_calls,
-        ROUND(AVG(duration_ms), 1) as avg_duration_ms,
-        ROUND(MIN(duration_ms), 1) as min_duration_ms,
-        ROUND(MAX(duration_ms), 1) as max_duration_ms,
-        ROUND(AVG(CASE WHEN ttft_ms IS NOT NULL THEN ttft_ms ELSE NULL END), 1) as avg_ttft_ms,
-        SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error_count,
-        ROUND((SUM(CASE WHEN status = 'error' THEN 1.0 ELSE 0.0 END) / COUNT(*)) * 100, 2) as error_rate_pct,
-        SUM(prompt_tokens) as total_prompt_tokens,
-        SUM(completion_tokens) as total_completion_tokens
-      FROM spans
-      GROUP BY step_type, component
-      ORDER BY total_calls DESC
-    `;
-    const statRows = db.prepare(statsQuery).all() as any[];
-    const componentStats: ComponentStat[] = statRows.map((r) => ({
-      step_type: r.step_type,
-      component: r.component,
-      total_calls: Number(r.total_calls || 0),
-      avg_duration_ms: Number(r.avg_duration_ms || 0),
-      min_duration_ms: Number(r.min_duration_ms || 0),
-      max_duration_ms: Number(r.max_duration_ms || 0),
-      avg_ttft_ms: r.avg_ttft_ms !== null ? Number(r.avg_ttft_ms) : null,
-      error_count: Number(r.error_count || 0),
-      error_rate_pct: Number(r.error_rate_pct || 0),
-      total_prompt_tokens: Number(r.total_prompt_tokens || 0),
-      total_completion_tokens: Number(r.total_completion_tokens || 0),
-    }));
+    // 4. Component stats (with p50 & p95)
+    const componentGroups = new Map<string, { step_type: StepType; component: string; spans: LightSpanRow[] }>();
+    for (const s of filteredSpans) {
+      const k = `${s.step_type}::${s.component}`;
+      if (!componentGroups.has(k)) {
+        componentGroups.set(k, { step_type: s.step_type, component: s.component, spans: [] });
+      }
+      componentGroups.get(k)!.spans.push(s);
+    }
 
-    // 5. Slowest spans
+    const componentStats: ComponentStat[] = Array.from(componentGroups.values())
+      .map((grp) => {
+        const st = computeBreakdownStat(grp.component, grp.component, grp.spans);
+        return {
+          step_type: grp.step_type,
+          component: grp.component,
+          total_calls: st.total_calls,
+          p50_duration_ms: st.p50_duration_ms,
+          p95_duration_ms: st.p95_duration_ms,
+          avg_duration_ms: st.avg_duration_ms,
+          min_duration_ms: st.min_duration_ms,
+          max_duration_ms: st.max_duration_ms,
+          avg_ttft_ms: st.avg_ttft_ms,
+          error_count: st.error_count,
+          error_rate_pct: st.error_rate_pct,
+          total_prompt_tokens: st.total_prompt_tokens,
+          total_completion_tokens: st.total_completion_tokens,
+        };
+      })
+      .sort((a, b) => b.total_calls - a.total_calls);
+
+    // 4b. Agent Stats (Orchestrator, Tabular, Document, Database + any extra)
+    const canonicalAgents: Array<{ key: string; label: string; subtitle: string }> = [
+      { key: "orchestrator", label: "Orchestrator", subtitle: "agent.orchestrator" },
+      { key: "tabular", label: "Tabular", subtitle: "agent.tabular" },
+      { key: "document", label: "Document", subtitle: "agent.document" },
+      { key: "database", label: "Database", subtitle: "agent.database" },
+    ];
+    const agentGroups = new Map<string, { label: string; subtitle: string; spans: LightSpanRow[] }>();
+    for (const ca of canonicalAgents) {
+      agentGroups.set(ca.key, { label: ca.label, subtitle: ca.subtitle, spans: [] });
+    }
+    for (const s of filteredSpans) {
+      if (s.step_type !== "agent" || s.step_name.startsWith("invoke_")) continue;
+      const meta = classifyAgentKey(s);
+      if (!agentGroups.has(meta.key)) {
+        agentGroups.set(meta.key, { label: meta.label, subtitle: meta.subtitle, spans: [] });
+      }
+      agentGroups.get(meta.key)!.spans.push(s);
+    }
+    const agentStats: BreakdownStat[] = Array.from(agentGroups.entries()).map(([key, grp]) =>
+      computeBreakdownStat(key, grp.label, grp.spans, { subtitle: grp.subtitle, category: "agent" })
+    );
+
+    // 4c. Tool Calls Stats (each tool call)
+    const toolGroups = new Map<string, { label: string; subtitle: string; category: string; spans: LightSpanRow[] }>();
+    for (const s of filteredSpans) {
+      if (!isToolCallSpan(s)) continue;
+      const key = `${s.step_name}::${s.component}`;
+      if (!toolGroups.has(key)) {
+        toolGroups.set(key, {
+          label: s.step_name || s.component,
+          subtitle: s.component,
+          category: s.step_type,
+          spans: [],
+        });
+      }
+      toolGroups.get(key)!.spans.push(s);
+    }
+    const toolStats: BreakdownStat[] = Array.from(toolGroups.entries())
+      .map(([key, grp]) =>
+        computeBreakdownStat(key, grp.label, grp.spans, { subtitle: grp.subtitle, category: grp.category })
+      )
+      .sort((a, b) => b.total_calls - a.total_calls || b.p95_duration_ms - a.p95_duration_ms);
+
+    // 4d. LLM Calls Stats by Caller (Orchestrator, Tabular, Document, Database, Hypothesis + Direct if present)
+    const canonicalLlmCallers: Array<{ key: string; label: string; subtitle: string }> = [
+      { key: "orchestrator", label: "Orchestrator", subtitle: "agent.orchestrator" },
+      { key: "tabular", label: "Tabular", subtitle: "agent.tabular" },
+      { key: "document", label: "Document", subtitle: "agent.document" },
+      { key: "database", label: "Database", subtitle: "agent.database" },
+      { key: "hypothesis", label: "Hypothesis", subtitle: "tools.hypothesis" },
+    ];
+    const llmCallerGroups = new Map<string, { label: string; subtitle: string; spans: LightSpanRow[] }>();
+    for (const cl of canonicalLlmCallers) {
+      llmCallerGroups.set(cl.key, { label: cl.label, subtitle: cl.subtitle, spans: [] });
+    }
+    const directLlmSpans: LightSpanRow[] = [];
+    const llmProviderGroups = new Map<string, { label: string; subtitle: string; spans: LightSpanRow[] }>();
+
+    for (const s of filteredSpans) {
+      if (s.step_type !== "llm") continue;
+
+      const callerKey = classifyLlmCaller(s, spanById);
+      if (llmCallerGroups.has(callerKey)) {
+        llmCallerGroups.get(callerKey)!.spans.push(s);
+      } else {
+        directLlmSpans.push(s);
+      }
+
+      const provKey = s.component || s.step_name || "llm.unknown";
+      const provLabel = provKey.replace(/^llm\./i, "");
+      if (!llmProviderGroups.has(provKey)) {
+        llmProviderGroups.set(provKey, {
+          label: provLabel.charAt(0).toUpperCase() + provLabel.slice(1),
+          subtitle: provKey,
+          spans: [],
+        });
+      }
+      llmProviderGroups.get(provKey)!.spans.push(s);
+    }
+
+    const llmStatsByCaller: BreakdownStat[] = Array.from(llmCallerGroups.entries()).map(([key, grp]) =>
+      computeBreakdownStat(key, grp.label, grp.spans, { subtitle: grp.subtitle, category: "llm_caller" })
+    );
+    if (directLlmSpans.length > 0) {
+      llmStatsByCaller.push(
+        computeBreakdownStat("direct", "Direct / Standalone", directLlmSpans, {
+          subtitle: "unattached llm calls",
+          category: "llm_caller",
+        })
+      );
+    }
+
+    const llmStatsByProvider: BreakdownStat[] = Array.from(llmProviderGroups.entries())
+      .map(([key, grp]) =>
+        computeBreakdownStat(key, grp.label, grp.spans, { subtitle: grp.subtitle, category: "llm_provider" })
+      )
+      .sort((a, b) => b.total_calls - a.total_calls);
+
+    // 5. Slowest spans (filtered by time window and duration)
+    const slowestClauses: string[] = [];
+    const slowestParams: any[] = [];
+    if (cutoffSec !== null) {
+      slowestClauses.push("start_time >= ?");
+      slowestParams.push(cutoffSec);
+    }
+    if (minDurationMs !== null) {
+      slowestClauses.push("duration_ms >= ?");
+      slowestParams.push(minDurationMs);
+    }
+    if (maxDurationMs !== null) {
+      slowestClauses.push("duration_ms <= ?");
+      slowestParams.push(maxDurationMs);
+    }
+    const slowestWhereSql = slowestClauses.length > 0 ? `WHERE ${slowestClauses.join(" AND ")}` : "";
     const slowestQuery = `
       SELECT *
       FROM spans
+      ${slowestWhereSql}
       ORDER BY duration_ms DESC
       LIMIT 20
     `;
-    const slowestRows = db.prepare(slowestQuery).all() as any[];
+    const slowestRows = db.prepare(slowestQuery).all(...slowestParams) as any[];
     const slowestSpans = slowestRows.map(rowToSpan);
 
     // 6. Recent requests (strictly USER REQUESTS only, excluding raw internal steps)
@@ -290,6 +640,7 @@ export function queryDashboardOverviewFromDb(): DashboardTelemetry | null {
         (SELECT s.inputs_json FROM spans s WHERE (s.trace_id = t.trace_id OR json_extract(s.tags_json, '$.investigation_id') = COALESCE(json_extract(t.tags_json, '$.investigation_id'), t.trace_id)) AND (s.inputs_json LIKE '%"objective"%' OR s.inputs_json LIKE '%"query"%' OR s.inputs_json LIKE '%"prompt"%') ORDER BY s.start_time ASC LIMIT 1) as query_inputs,
         (SELECT s.tags_json FROM spans s WHERE (s.trace_id = t.trace_id OR json_extract(s.tags_json, '$.investigation_id') = COALESCE(json_extract(t.tags_json, '$.investigation_id'), t.trace_id)) AND (s.tags_json LIKE '%"query"%' OR s.tags_json LIKE '%"objective"%') ORDER BY s.start_time ASC LIMIT 1) as query_tags
       FROM spans t
+      ${whereSql}
       GROUP BY request_id
       HAVING 
         NOT (
@@ -301,10 +652,11 @@ export function queryDashboardOverviewFromDb(): DashboardTelemetry | null {
             OR (SELECT s.step_name FROM spans s WHERE s.trace_id = t.trace_id LIMIT 1) LIKE 'inspect_%'
           )
         )
+        ${havingDurationSql}
       ORDER BY start_time DESC
       LIMIT 100
     `;
-    const recentRows = db.prepare(recentQuery).all() as any[];
+    const recentRows = db.prepare(recentQuery).all(...whereParams, ...havingDurationParams) as any[];
     const recentTraces: TraceSummary[] = recentRows
       .map((d) => {
         const stepName = d.root_step_name || "";
@@ -409,6 +761,10 @@ export function queryDashboardOverviewFromDb(): DashboardTelemetry | null {
       },
       timeline,
       componentStats,
+      agentStats,
+      toolStats,
+      llmStatsByCaller,
+      llmStatsByProvider,
       slowestSpans,
       recentTraces,
     };

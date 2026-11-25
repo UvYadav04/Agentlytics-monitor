@@ -1,7 +1,28 @@
 "use client";
 
-import React from "react";
-import { ChevronDown, Clock, Download, RefreshCw } from "lucide-react";
+import React, { useEffect, useRef, useState } from "react";
+import { Check, ChevronDown, Clock, Download, RefreshCw } from "lucide-react";
+
+export const TIME_RANGE_OPTIONS: Array<{ label: string; sinceHours: number | null }> = [
+  { label: "All Time (Recorded Traces)", sinceHours: null },
+  { label: "Last 1 Hour", sinceHours: 1 },
+  { label: "Last 6 Hours", sinceHours: 6 },
+  { label: "Last 24 Hours", sinceHours: 24 },
+  { label: "Last 7 Days", sinceHours: 24 * 7 },
+  { label: "Last 30 Days", sinceHours: 24 * 30 },
+];
+
+export function timeRangeToHours(label: string): number | null {
+  const found = TIME_RANGE_OPTIONS.find((o) => o.label === label);
+  return found ? found.sinceHours : null;
+}
+
+const REFRESH_OPTIONS: Array<{ label: string; ms: number }> = [
+  { label: "Refresh 10s", ms: 10000 },
+  { label: "Refresh 30s", ms: 30000 },
+  { label: "Refresh 60s", ms: 60000 },
+  { label: "Manual only", ms: 0 },
+];
 
 interface TopHeaderProps {
   timeRange: string;
@@ -11,6 +32,7 @@ interface TopHeaderProps {
   onRefresh: () => void;
   isRefreshing: boolean;
   lastUpdatedText: string;
+  onExport?: () => void;
 }
 
 export const TopHeader: React.FC<TopHeaderProps> = ({
@@ -21,7 +43,25 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
   onRefresh,
   isRefreshing,
   lastUpdatedText,
+  onExport,
 }) => {
+  const [openMenu, setOpenMenu] = useState<"time" | "refresh" | null>(null);
+  const controlsRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (controlsRef.current && !controlsRef.current.contains(e.target as Node)) {
+        setOpenMenu(null);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  const activeRefreshLabel =
+    REFRESH_OPTIONS.find((r) => r.ms === refreshInterval)?.label ||
+    (refreshInterval > 0 ? `Refresh ${Math.round(refreshInterval / 1000)}s` : "Manual only");
+
   return (
     <header className="sticky top-0 z-20 flex h-16 w-full items-center justify-between border-b border-[#1E293B] bg-[#070C19]/95 px-6 backdrop-blur-md">
       {/* Left Breadcrumb & Badges */}
@@ -43,36 +83,104 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
       </div>
 
       {/* Right Controls */}
-      <div className="flex items-center gap-3">
+      <div ref={controlsRef} className="flex items-center gap-2.5">
         {/* Time Window Dropdown */}
         <div className="relative">
-          <button className="flex items-center gap-1.5 rounded-lg border border-[#1E293B] bg-[#0F172A] px-3 py-1.5 text-xs font-medium text-slate-300 hover:border-slate-700 transition-colors">
-            <Clock className="h-3.5 w-3.5 text-slate-400" />
+          <button
+            type="button"
+            onClick={() => setOpenMenu((m) => (m === "time" ? null : "time"))}
+            className="flex items-center gap-1.5 rounded-lg border border-[#1E293B] bg-[#0F172A] px-3 py-1.5 text-xs font-medium text-slate-300 hover:border-slate-700 transition-colors"
+          >
+            <Clock className="h-3.5 w-3.5 text-cyan-400" />
             <span>{timeRange}</span>
             <ChevronDown className="h-3 w-3 text-slate-500 ml-0.5" />
           </button>
+
+          {openMenu === "time" && (
+            <div className="absolute right-0 mt-1.5 w-60 rounded-xl border border-[#1E293B] bg-[#0F172A] p-1.5 shadow-2xl z-30">
+              {TIME_RANGE_OPTIONS.map((opt) => {
+                const selected = opt.label === timeRange;
+                return (
+                  <button
+                    key={opt.label}
+                    type="button"
+                    onClick={() => {
+                      setTimeRange(opt.label);
+                      setOpenMenu(null);
+                    }}
+                    className={`flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-xs transition-colors ${
+                      selected
+                        ? "bg-cyan-500/15 text-cyan-300 font-semibold"
+                        : "text-slate-300 hover:bg-[#17233D] hover:text-white"
+                    }`}
+                  >
+                    <span>{opt.label}</span>
+                    {selected && <Check className="h-3.5 w-3.5 text-cyan-400" />}
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
 
-        {/* Refresh Interval Dropdown */}
-        <div className="relative">
+        {/* Refresh Now + Interval Dropdown */}
+        <div className="relative flex items-center">
           <button
+            type="button"
             onClick={onRefresh}
-            className="flex items-center gap-1.5 rounded-lg border border-[#1E293B] bg-[#0F172A] px-3 py-1.5 text-xs font-medium text-slate-300 hover:border-slate-700 transition-colors"
+            title="Refresh telemetry now"
+            className="flex items-center gap-1.5 rounded-l-lg border border-[#1E293B] bg-[#0F172A] px-2.5 py-1.5 text-xs font-medium text-slate-300 hover:border-slate-700 hover:text-white transition-colors"
           >
             <RefreshCw className={`h-3.5 w-3.5 text-slate-400 ${isRefreshing ? "animate-spin text-cyan-400" : ""}`} />
-            <span>Refresh 30s</span>
-            <ChevronDown className="h-3 w-3 text-slate-500 ml-0.5" />
+            <span>{activeRefreshLabel}</span>
           </button>
+          <button
+            type="button"
+            onClick={() => setOpenMenu((m) => (m === "refresh" ? null : "refresh"))}
+            aria-label="Select refresh interval"
+            className="flex items-center rounded-r-lg border border-l-0 border-[#1E293B] bg-[#0F172A] px-2 py-1.5 text-xs text-slate-400 hover:border-slate-700 hover:text-white transition-colors"
+          >
+            <ChevronDown className="h-3.5 w-3.5" />
+          </button>
+
+          {openMenu === "refresh" && (
+            <div className="absolute right-0 top-full mt-1.5 w-40 rounded-xl border border-[#1E293B] bg-[#0F172A] p-1.5 shadow-2xl z-30">
+              {REFRESH_OPTIONS.map((opt) => {
+                const selected = opt.ms === refreshInterval;
+                return (
+                  <button
+                    key={opt.label}
+                    type="button"
+                    onClick={() => {
+                      setRefreshInterval(opt.ms);
+                      setOpenMenu(null);
+                    }}
+                    className={`flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-xs transition-colors ${
+                      selected
+                        ? "bg-cyan-500/15 text-cyan-300 font-semibold"
+                        : "text-slate-300 hover:bg-[#17233D] hover:text-white"
+                    }`}
+                  >
+                    <span>{opt.label}</span>
+                    {selected && <Check className="h-3.5 w-3.5 text-cyan-400" />}
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
 
         {/* Export Button */}
-        <div className="relative">
-          <button className="flex items-center gap-1.5 rounded-lg border border-[#1E293B] bg-[#0F172A] px-3 py-1.5 text-xs font-medium text-slate-300 hover:border-slate-700 transition-colors">
+        {onExport && (
+          <button
+            type="button"
+            onClick={onExport}
+            className="flex items-center gap-1.5 rounded-lg border border-[#1E293B] bg-[#0F172A] px-3 py-1.5 text-xs font-medium text-slate-300 hover:border-slate-700 hover:text-white transition-colors"
+          >
             <Download className="h-3.5 w-3.5 text-slate-400" />
-            <span>Export</span>
-            <ChevronDown className="h-3 w-3 text-slate-500 ml-0.5" />
+            <span>Export JSON</span>
           </button>
-        </div>
+        )}
 
         {/* Live Update Indicator */}
         <div className="hidden sm:flex items-center gap-1.5 pl-2 text-xs font-medium text-slate-400">

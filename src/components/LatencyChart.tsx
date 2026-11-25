@@ -9,18 +9,29 @@ interface LatencyChartProps {
 
 export const LatencyChart: React.FC<LatencyChartProps> = ({ data }) => {
   const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
+  const [visibleSeries, setVisibleSeries] = useState<{ p50: boolean; avg: boolean; p95: boolean }>({
+    p50: true,
+    avg: true,
+    p95: true,
+  });
 
   if (!data || data.length === 0) {
     return (
       <div className="flex h-full flex-col justify-between rounded-xl border border-[#1E293B] bg-[#0F172A] p-5 shadow-card">
-        <h3 className="text-sm font-semibold text-white">End-to-end Latency</h3>
-        <p className="text-xs text-slate-500 my-auto text-center">No latency data available</p>
+        <div>
+          <h3 className="text-sm font-semibold text-white">End-to-end Latency</h3>
+          <p className="text-[11px] text-slate-400">P50, Average, and P95 execution duration of investigations</p>
+        </div>
+        <p className="text-xs text-slate-500 my-auto text-center py-10">No latency data available for current filter</p>
       </div>
     );
   }
 
-  const rawMax = Math.max(...data.map((d) => d.p95 || 0), 10);
-  const maxY = Math.ceil(rawMax / 10) * 10 || 40;
+  const rawMax = Math.max(
+    ...data.map((d) => Math.max(visibleSeries.p95 ? d.p95 || 0 : 0, visibleSeries.avg ? d.avg || 0 : 0, visibleSeries.p50 ? d.p50 || 0 : 0)),
+    5
+  );
+  const maxY = rawMax <= 10 ? Math.ceil(rawMax) : Math.ceil(rawMax / 10) * 10 || 40;
   const chartWidth = 540;
   const chartHeight = 180;
   const paddingLeft = 45;
@@ -32,43 +43,52 @@ export const LatencyChart: React.FC<LatencyChartProps> = ({ data }) => {
   const innerHeight = chartHeight - paddingTop - paddingBottom;
 
   const points = data.map((d, i) => {
-    const x = paddingLeft + (i / Math.max(1, data.length - 1)) * innerWidth;
+    const x =
+      data.length === 1
+        ? paddingLeft + innerWidth / 2
+        : paddingLeft + (i / Math.max(1, data.length - 1)) * innerWidth;
     const p50Val = d.p50 ?? 0;
     const p95Val = d.p95 ?? 0;
+    const avgVal = d.avg ?? p50Val;
     const y50 = paddingTop + innerHeight - (Math.min(maxY, p50Val) / maxY) * innerHeight;
     const y95 = paddingTop + innerHeight - (Math.min(maxY, p95Val) / maxY) * innerHeight;
-    return { ...d, x, y50, y95, p50Val, p95Val };
+    const yAvg = paddingTop + innerHeight - (Math.min(maxY, avgVal) / maxY) * innerHeight;
+    return { ...d, x, y50, y95, yAvg, p50Val, p95Val, avgVal };
   });
 
-  // Build curved SVG path for p50
-  let p50D = `M ${points[0].x} ${points[0].y50}`;
-  for (let i = 1; i < points.length; i++) {
-    const prev = points[i - 1];
-    const curr = points[i];
-    const cx = (prev.x + curr.x) / 2;
-    p50D += ` C ${cx} ${prev.y50}, ${cx} ${curr.y50}, ${curr.x} ${curr.y50}`;
-  }
+  const buildPath = (getY: (p: (typeof points)[number]) => number) => {
+    let dStr = `M ${points[0].x} ${getY(points[0])}`;
+    for (let i = 1; i < points.length; i++) {
+      const prev = points[i - 1];
+      const curr = points[i];
+      const cx = (prev.x + curr.x) / 2;
+      dStr += ` C ${cx} ${getY(prev)}, ${cx} ${getY(curr)}, ${curr.x} ${getY(curr)}`;
+    }
+    return dStr;
+  };
 
-  // Build curved SVG path for p95
-  let p95D = `M ${points[0].x} ${points[0].y95}`;
-  for (let i = 1; i < points.length; i++) {
-    const prev = points[i - 1];
-    const curr = points[i];
-    const cx = (prev.x + curr.x) / 2;
-    p95D += ` C ${cx} ${prev.y95}, ${cx} ${curr.y95}, ${curr.x} ${curr.y95}`;
-  }
+  const p50D = buildPath((p) => p.y50);
+  const avgD = buildPath((p) => p.yAvg);
+  const p95D = buildPath((p) => p.y95);
 
   const hoveredPoint = hoveredIdx !== null ? points[hoveredIdx] : null;
+  const yTicks = [maxY, Number((maxY / 2).toFixed(1)), 0];
 
-  const yTicks = [maxY, Math.round(maxY / 2), 0];
+  const toggleSeries = (key: "p50" | "avg" | "p95") => {
+    setVisibleSeries((prev) => {
+      const next = { ...prev, [key]: !prev[key] };
+      if (!next.p50 && !next.avg && !next.p95) return prev;
+      return next;
+    });
+  };
 
   return (
     <div className="flex h-full flex-col justify-between rounded-xl border border-[#1E293B] bg-[#0F172A] p-5 shadow-card">
       {/* Title */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <h3 className="text-sm font-semibold text-white">End-to-end Latency</h3>
-          <p className="text-[11px] text-slate-400">P50 and P95 execution duration of investigations</p>
+          <p className="text-[11px] text-slate-400">p50, Average, and p95 execution duration of investigations</p>
         </div>
       </div>
 
@@ -80,10 +100,10 @@ export const LatencyChart: React.FC<LatencyChartProps> = ({ data }) => {
           onMouseLeave={() => setHoveredIdx(null)}
         >
           {/* Horizontal Grid lines */}
-          {yTicks.map((val) => {
+          {yTicks.map((val, idx) => {
             const y = paddingTop + innerHeight - (val / maxY) * innerHeight;
             return (
-              <g key={val}>
+              <g key={`${val}-${idx}`}>
                 <line
                   x1={paddingLeft}
                   y1={y}
@@ -116,25 +136,57 @@ export const LatencyChart: React.FC<LatencyChartProps> = ({ data }) => {
             Seconds
           </text>
 
-          {/* p50 Line (Blue) */}
-          <path
-            d={p50D}
-            fill="none"
-            stroke="#38BDF8"
-            strokeWidth="2.2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
+          {/* p50 Line (Cyan) */}
+          {visibleSeries.p50 && (
+            <>
+              <path
+                d={p50D}
+                fill="none"
+                stroke="#38BDF8"
+                strokeWidth="2.2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+              {points.map((p, idx) => (
+                <circle key={`p50-${idx}`} cx={p.x} cy={p.y50} r={points.length === 1 ? 4.5 : 2.5} fill="#38BDF8" />
+              ))}
+            </>
+          )}
 
-          {/* p95 Line (Yellow / Amber) */}
-          <path
-            d={p95D}
-            fill="none"
-            stroke="#F59E0B"
-            strokeWidth="2.2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
+          {/* Average Line (Emerald, dashed) */}
+          {visibleSeries.avg && (
+            <>
+              <path
+                d={avgD}
+                fill="none"
+                stroke="#10B981"
+                strokeWidth="2"
+                strokeDasharray="4 3"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+              {points.map((p, idx) => (
+                <circle key={`avg-${idx}`} cx={p.x} cy={p.yAvg} r={points.length === 1 ? 4.5 : 2.5} fill="#10B981" />
+              ))}
+            </>
+          )}
+
+          {/* p95 Line (Amber) */}
+          {visibleSeries.p95 && (
+            <>
+              <path
+                d={p95D}
+                fill="none"
+                stroke="#F59E0B"
+                strokeWidth="2.2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+              {points.map((p, idx) => (
+                <circle key={`p95-${idx}`} cx={p.x} cy={p.y95} r={points.length === 1 ? 4.5 : 2.5} fill="#F59E0B" />
+              ))}
+            </>
+          )}
 
           {/* X Axis Ticks */}
           {points.map((p, idx) => (
@@ -175,22 +227,15 @@ export const LatencyChart: React.FC<LatencyChartProps> = ({ data }) => {
                 strokeWidth="1"
                 strokeDasharray="2 2"
               />
-              <circle
-                cx={hoveredPoint.x}
-                cy={hoveredPoint.y50}
-                r="4.5"
-                fill="#38BDF8"
-                stroke="#0F172A"
-                strokeWidth="2"
-              />
-              <circle
-                cx={hoveredPoint.x}
-                cy={hoveredPoint.y95}
-                r="4.5"
-                fill="#F59E0B"
-                stroke="#0F172A"
-                strokeWidth="2"
-              />
+              {visibleSeries.p50 && (
+                <circle cx={hoveredPoint.x} cy={hoveredPoint.y50} r="4.5" fill="#38BDF8" stroke="#0F172A" strokeWidth="2" />
+              )}
+              {visibleSeries.avg && (
+                <circle cx={hoveredPoint.x} cy={hoveredPoint.yAvg} r="4.5" fill="#10B981" stroke="#0F172A" strokeWidth="2" />
+              )}
+              {visibleSeries.p95 && (
+                <circle cx={hoveredPoint.x} cy={hoveredPoint.y95} r="4.5" fill="#F59E0B" stroke="#0F172A" strokeWidth="2" />
+              )}
             </g>
           )}
         </svg>
@@ -198,32 +243,52 @@ export const LatencyChart: React.FC<LatencyChartProps> = ({ data }) => {
         {/* Floating Tooltip */}
         {hoveredPoint && (
           <div
-            className="pointer-events-none absolute z-10 rounded-md border border-slate-700 bg-slate-900/90 px-3 py-2 text-xs text-white shadow-xl backdrop-blur-sm -translate-x-1/2 -translate-y-full"
+            className="pointer-events-none absolute z-10 rounded-md border border-slate-700 bg-slate-900/95 px-3 py-2 text-xs text-white shadow-xl backdrop-blur-sm -translate-x-1/2 -translate-y-full whitespace-nowrap"
             style={{
               left: `${(hoveredPoint.x / chartWidth) * 100}%`,
-              top: `${(Math.min(hoveredPoint.y50, hoveredPoint.y95) / chartHeight) * 100 - 8}%`,
+              top: `${(Math.min(hoveredPoint.y50, hoveredPoint.yAvg, hoveredPoint.y95) / chartHeight) * 100 - 8}%`,
             }}
           >
-            <div className="font-mono text-[10px] text-slate-400 mb-1">{hoveredPoint.date || hoveredPoint.time}</div>
-            <div className="flex items-center gap-2 font-mono">
-              <span className="text-cyan-400 font-bold">p50: {hoveredPoint.p50Val.toFixed(1)}s</span>
-              <span className="text-slate-500">•</span>
-              <span className="text-amber-400 font-bold">p95: {hoveredPoint.p95Val.toFixed(1)}s</span>
+            <div className="font-mono text-[10px] text-slate-400 mb-1">
+              {hoveredPoint.date || hoveredPoint.time} ({hoveredPoint.count} req)
+            </div>
+            <div className="flex items-center gap-2 font-mono text-[11px]">
+              <span className="text-cyan-400 font-bold">p50: {hoveredPoint.p50Val.toFixed(2)}s</span>
+              <span className="text-slate-600">•</span>
+              <span className="text-emerald-400 font-bold">avg: {hoveredPoint.avgVal.toFixed(2)}s</span>
+              <span className="text-slate-600">•</span>
+              <span className="text-amber-400 font-bold">p95: {hoveredPoint.p95Val.toFixed(2)}s</span>
             </div>
           </div>
         )}
       </div>
 
-      {/* Legend */}
+      {/* Interactive Legend */}
       <div className="mt-2 flex items-center justify-center gap-4 border-t border-[#1E293B]/60 pt-2 text-xs">
-        <div className="flex items-center gap-1.5">
+        <button
+          type="button"
+          onClick={() => toggleSeries("p50")}
+          className={`flex items-center gap-1.5 transition-opacity ${visibleSeries.p50 ? "opacity-100" : "opacity-40"}`}
+        >
           <span className="h-2 w-2 rounded-full bg-cyan-400" />
-          <span className="text-[11px] font-medium text-slate-400">p50 Latency</span>
-        </div>
-        <div className="flex items-center gap-1.5">
+          <span className="text-[11px] font-medium text-slate-300">p50 Latency</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => toggleSeries("avg")}
+          className={`flex items-center gap-1.5 transition-opacity ${visibleSeries.avg ? "opacity-100" : "opacity-40"}`}
+        >
+          <span className="h-2 w-2 rounded-full bg-emerald-400" />
+          <span className="text-[11px] font-medium text-slate-300">Average Latency</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => toggleSeries("p95")}
+          className={`flex items-center gap-1.5 transition-opacity ${visibleSeries.p95 ? "opacity-100" : "opacity-40"}`}
+        >
           <span className="h-2 w-2 rounded-full bg-amber-400" />
-          <span className="text-[11px] font-medium text-slate-400">p95 Latency</span>
-        </div>
+          <span className="text-[11px] font-medium text-slate-300">p95 Latency</span>
+        </button>
       </div>
     </div>
   );

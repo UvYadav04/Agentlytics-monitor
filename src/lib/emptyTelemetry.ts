@@ -17,6 +17,10 @@ export const emptyTelemetryData: DashboardTelemetry = {
   },
   timeline: [],
   componentStats: [],
+  agentStats: [],
+  toolStats: [],
+  llmStatsByCaller: [],
+  llmStatsByProvider: [],
   recentTraces: [],
   slowestSpans: [],
 };

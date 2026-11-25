@@ -1,21 +1,24 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Zap, AlertTriangle, Clock, RefreshCw, Cpu, Activity } from "lucide-react";
+import { Zap, RefreshCw } from "lucide-react";
 import { Sidebar } from "@/components/Sidebar";
-import { TopHeader } from "@/components/TopHeader";
+import { TIME_RANGE_OPTIONS, TopHeader, timeRangeToHours } from "@/components/TopHeader";
 import { BottlenecksTable } from "@/components/BottlenecksTable";
+import { DurationFilterBar } from "@/components/DurationFilterBar";
 import { TraceInspectorModal } from "@/components/TraceInspectorModal";
 import { fetchDashboardOverview, fetchTraceTree } from "@/lib/api";
 import { emptyTelemetryData } from "@/lib/emptyTelemetry";
-import type { DashboardTelemetry, SpanRecord, TraceTree } from "@/lib/types";
+import type { DashboardTelemetry, TraceTree } from "@/lib/types";
 import { formatDuration } from "@/lib/formatters";
 
 export default function BottlenecksPage() {
   const router = useRouter();
-  const [activeNav, setActiveNav] = useState<string>("bottlenecks");
-  const [timeRange, setTimeRange] = useState<string>("All Time (Recorded Traces)");
+  const [activeNav] = useState<string>("bottlenecks");
+  const [timeRange, setTimeRange] = useState<string>(TIME_RANGE_OPTIONS[0].label);
+  const [minDurationMs, setMinDurationMs] = useState<number | null>(null);
+  const [maxDurationMs, setMaxDurationMs] = useState<number | null>(null);
   const [refreshInterval, setRefreshInterval] = useState<number>(30000);
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
   const [lastUpdatedText, setLastUpdatedText] = useState<string>("Updated just now");
@@ -25,10 +28,14 @@ export default function BottlenecksPage() {
   const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
 
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     setIsRefreshing(true);
     try {
-      const overviewData = await fetchDashboardOverview();
+      const overviewData = await fetchDashboardOverview({
+        sinceHours: timeRangeToHours(timeRange),
+        minDurationMs,
+        maxDurationMs,
+      });
       if (overviewData && overviewData.metrics) {
         setTelemetry(overviewData);
       }
@@ -39,11 +46,11 @@ export default function BottlenecksPage() {
       setIsRefreshing(false);
       setIsLoading(false);
     }
-  };
+  }, [timeRange, minDurationMs, maxDurationMs]);
 
   useEffect(() => {
     loadData();
-  }, []);
+  }, [loadData]);
 
   useEffect(() => {
     if (refreshInterval <= 0) return;
@@ -51,7 +58,7 @@ export default function BottlenecksPage() {
       loadData();
     }, refreshInterval);
     return () => clearInterval(timer);
-  }, [refreshInterval]);
+  }, [refreshInterval, loadData]);
 
   const handleSelectTrace = async (traceId: string) => {
     setSelectedTraceId(traceId);
@@ -171,6 +178,19 @@ export default function BottlenecksPage() {
               </div>
             </div>
           </div>
+
+          {/* Duration & Time Filters */}
+          <DurationFilterBar
+            minDurationMs={minDurationMs}
+            maxDurationMs={maxDurationMs}
+            onChangeDurationRange={(nextMin, nextMax) => {
+              setMinDurationMs(nextMin);
+              setMaxDurationMs(nextMax);
+            }}
+            timeRangeLabel={timeRange}
+            matchingTracesCount={telemetry.metrics.totalTraces}
+            matchingSpansCount={telemetry.metrics.totalSpans}
+          />
 
           {/* Full Scrollable Bottlenecks Table */}
           <div className="flex-1 flex flex-col min-h-0">

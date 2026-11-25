@@ -1,10 +1,10 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Layers, CheckCircle2, AlertOctagon, Clock, Coins, RefreshCw } from "lucide-react";
+import { Layers, RefreshCw } from "lucide-react";
 import { Sidebar } from "@/components/Sidebar";
-import { TopHeader } from "@/components/TopHeader";
+import { TIME_RANGE_OPTIONS, TopHeader, timeRangeToHours } from "@/components/TopHeader";
 import { RecentTracesTable } from "@/components/RecentTracesTable";
 import { TraceInspectorModal } from "@/components/TraceInspectorModal";
 import { fetchDashboardOverview, fetchTraceTree, fetchTraces } from "@/lib/api";
@@ -13,8 +13,8 @@ import type { DashboardTelemetry, TraceSummary, TraceTree } from "@/lib/types";
 
 export default function RequestsPage() {
   const router = useRouter();
-  const [activeNav, setActiveNav] = useState<string>("requests");
-  const [timeRange, setTimeRange] = useState<string>("All Time (Recorded Traces)");
+  const [activeNav] = useState<string>("requests");
+  const [timeRange, setTimeRange] = useState<string>(TIME_RANGE_OPTIONS[0].label);
   const [refreshInterval, setRefreshInterval] = useState<number>(30000);
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
   const [lastUpdatedText, setLastUpdatedText] = useState<string>("Updated just now");
@@ -25,18 +25,21 @@ export default function RequestsPage() {
   const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
 
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     setIsRefreshing(true);
     try {
+      const sinceHours = timeRangeToHours(timeRange);
       const [overviewData, tracesData] = await Promise.all([
-        fetchDashboardOverview(),
+        fetchDashboardOverview({ sinceHours }),
         fetchTraces(100, 0),
       ]);
 
       if (overviewData && overviewData.metrics) {
         setTelemetry(overviewData);
       }
-      if (tracesData && Array.isArray(tracesData)) {
+      if (sinceHours !== null && overviewData?.recentTraces) {
+        setAllRequests(overviewData.recentTraces);
+      } else if (tracesData && Array.isArray(tracesData)) {
         setAllRequests(tracesData);
       } else if (overviewData && overviewData.recentTraces) {
         setAllRequests(overviewData.recentTraces);
@@ -48,11 +51,11 @@ export default function RequestsPage() {
       setIsRefreshing(false);
       setIsLoading(false);
     }
-  };
+  }, [timeRange]);
 
   useEffect(() => {
     loadData();
-  }, []);
+  }, [loadData]);
 
   useEffect(() => {
     if (refreshInterval <= 0) return;
@@ -60,7 +63,7 @@ export default function RequestsPage() {
       loadData();
     }, refreshInterval);
     return () => clearInterval(timer);
-  }, [refreshInterval]);
+  }, [refreshInterval, loadData]);
 
   const handleSelectTrace = async (traceId: string) => {
     setSelectedTraceId(traceId);

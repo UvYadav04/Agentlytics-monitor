@@ -1,18 +1,52 @@
 import { emptyTelemetryData } from "./emptyTelemetry";
 import { isRealUserRequest } from "./types";
-import type { ComponentStat, DashboardTelemetry, SpanRecord, TraceSummary, TraceTree } from "./types";
+import type {
+  ComponentStat,
+  DashboardTelemetry,
+  SpanRecord,
+  TelemetryFilters,
+  TraceSummary,
+  TraceTree,
+} from "./types";
 
 const BASE_PATH = (process.env.NEXT_PUBLIC_BASE_PATH ?? "/monitoring").replace(/\/$/, "");
 const INTERNAL_API = `${BASE_PATH}/api/monitoring`;
 const EXTERNAL_API = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api").replace(/\/$/, "");
 
-export async function fetchDashboardOverview(): Promise<DashboardTelemetry> {
+function normalizeOverviewPayload(data: any): DashboardTelemetry {
+  return {
+    metrics: data.metrics,
+    timeline: data.timeline || [],
+    componentStats: data.componentStats || [],
+    agentStats: data.agentStats || [],
+    toolStats: data.toolStats || [],
+    llmStatsByCaller: data.llmStatsByCaller || [],
+    llmStatsByProvider: data.llmStatsByProvider || [],
+    recentTraces: (data.recentTraces || []).filter(isRealUserRequest),
+    slowestSpans: data.slowestSpans || [],
+  };
+}
+
+export async function fetchDashboardOverview(filters?: TelemetryFilters): Promise<DashboardTelemetry> {
+  const params = new URLSearchParams();
+  if (filters?.sinceHours !== undefined && filters?.sinceHours !== null && filters.sinceHours > 0) {
+    params.set("since_hours", String(filters.sinceHours));
+  }
+  if (filters?.minDurationMs !== undefined && filters?.minDurationMs !== null) {
+    params.set("min_duration_ms", String(filters.minDurationMs));
+  }
+  if (filters?.maxDurationMs !== undefined && filters?.maxDurationMs !== null) {
+    params.set("max_duration_ms", String(filters.maxDurationMs));
+  }
+  const qs = params.toString();
+  const suffix = qs ? `?${qs}` : "";
+
   // 1. Try Next.js internal API (queries /app/traces/traces.db directly)
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 2500);
 
-    const res = await fetch(`${INTERNAL_API}/overview`, {
+    const res = await fetch(`${INTERNAL_API}/overview${suffix}`, {
       credentials: "include",
       headers: { "Content-Type": "application/json" },
       signal: controller.signal,
@@ -22,13 +56,7 @@ export async function fetchDashboardOverview(): Promise<DashboardTelemetry> {
     if (res.ok) {
       const data = await res.json();
       if (data && data.metrics) {
-        return {
-          metrics: data.metrics,
-          timeline: data.timeline || [],
-          componentStats: data.componentStats || [],
-          recentTraces: (data.recentTraces || []).filter(isRealUserRequest),
-          slowestSpans: data.slowestSpans || [],
-        };
+        return normalizeOverviewPayload(data);
       }
     }
   } catch {}
@@ -38,7 +66,7 @@ export async function fetchDashboardOverview(): Promise<DashboardTelemetry> {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 2500);
 
-    const res = await fetch(`${EXTERNAL_API}/monitoring/overview`, {
+    const res = await fetch(`${EXTERNAL_API}/monitoring/overview${suffix}`, {
       credentials: "include",
       headers: { "Content-Type": "application/json" },
       signal: controller.signal,
@@ -48,13 +76,7 @@ export async function fetchDashboardOverview(): Promise<DashboardTelemetry> {
     if (res.ok) {
       const data = await res.json();
       if (data && data.metrics) {
-        return {
-          metrics: data.metrics,
-          timeline: data.timeline || [],
-          componentStats: data.componentStats || [],
-          recentTraces: (data.recentTraces || []).filter(isRealUserRequest),
-          slowestSpans: data.slowestSpans || [],
-        };
+        return normalizeOverviewPayload(data);
       }
     }
   } catch {}
