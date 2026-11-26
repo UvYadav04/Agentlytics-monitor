@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { fetchBackendJson, MONITORING_SOURCE_HEADER } from "@/lib/backendProxy";
 import { deleteTracesFromDb, queryTracesListFromDb } from "@/lib/sqliteTraces";
 
 export const dynamic = "force-dynamic";
@@ -13,46 +14,49 @@ export async function GET(request: NextRequest) {
     // 1. Direct from bound volume /app/traces/traces.db
     const tracesFromDb = queryTracesListFromDb(limit, offset, status);
     if (tracesFromDb !== null) {
-      return NextResponse.json({
-        limit,
-        offset,
-        count: tracesFromDb.length,
-        traces: tracesFromDb,
-      });
+      return NextResponse.json(
+        {
+          limit,
+          offset,
+          count: tracesFromDb.length,
+          traces: tracesFromDb,
+        },
+        { headers: { [MONITORING_SOURCE_HEADER]: "sqlite" } }
+      );
     }
 
     // 2. Proxy to backend API if available
-    const apiBase = (process.env.API_URL || process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api").replace(/\/$/, "");
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 2000);
-      const res = await fetch(`${apiBase}/monitoring/traces?${searchParams.toString()}`, {
-        signal: controller.signal,
-        headers: { "Content-Type": "application/json" },
+    const backendData = await fetchBackendJson<any>(
+      `/monitoring/traces?${searchParams.toString()}`,
+      {},
+      15000
+    );
+    if (backendData && Array.isArray(backendData.traces)) {
+      return NextResponse.json(backendData, {
+        headers: { [MONITORING_SOURCE_HEADER]: "backend" },
       });
-      clearTimeout(timeoutId);
-      if (res.ok) {
-        const json = await res.json();
-        return NextResponse.json(json);
-      }
-    } catch {
-      // Backend offline
     }
 
     // 3. Fallback: Clean empty trace list
-    return NextResponse.json({
-      limit,
-      offset,
-      count: 0,
-      traces: [],
-    });
+    return NextResponse.json(
+      {
+        limit,
+        offset,
+        count: 0,
+        traces: [],
+      },
+      { headers: { [MONITORING_SOURCE_HEADER]: "empty-fallback" } }
+    );
   } catch {
-    return NextResponse.json({
-      limit: 50,
-      offset: 0,
-      count: 0,
-      traces: [],
-    });
+    return NextResponse.json(
+      {
+        limit: 50,
+        offset: 0,
+        count: 0,
+        traces: [],
+      },
+      { headers: { [MONITORING_SOURCE_HEADER]: "empty-fallback" } }
+    );
   }
 }
 
@@ -80,26 +84,19 @@ export async function DELETE(request: NextRequest) {
     // 2. Also proxy to backend API if configured
     let backendSuccess = false;
     let backendDeletedSpans = 0;
-    const apiBase = (process.env.API_URL || process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api").replace(/\/$/, "");
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 2500);
-      const res = await fetch(`${apiBase}/monitoring/traces/bulk-delete`, {
+    const backendJson = await fetchBackendJson<any>(
+      "/monitoring/traces/bulk-delete",
+      {
         method: "POST",
-        signal: controller.signal,
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ trace_ids: traceIds }),
-      });
-      clearTimeout(timeoutId);
-      if (res.ok) {
-        backendSuccess = true;
-        const json = await res.json().catch(() => null);
-        if (json && typeof json.deleted_spans_count === "number") {
-          backendDeletedSpans = json.deleted_spans_count;
-        }
+      },
+      10000
+    );
+    if (backendJson) {
+      backendSuccess = true;
+      if (typeof backendJson.deleted_spans_count === "number") {
+        backendDeletedSpans = backendJson.deleted_spans_count;
       }
-    } catch {
-      // Backend offline or unreachable
     }
 
     if (!dbResult.success && !backendSuccess) {

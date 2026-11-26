@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { fetchBackendJson } from "@/lib/backendProxy";
 import { deleteTracesFromDb, queryTraceTreeFromDb } from "@/lib/sqliteTraces";
 
 export const dynamic = "force-dynamic";
@@ -17,23 +18,13 @@ export async function GET(
     }
 
     // 2. Proxy to backend API if available
-    const apiBase = (process.env.API_URL || process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api").replace(/\/$/, "");
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 2000);
-      const res = await fetch(`${apiBase}/monitoring/traces/${encodeURIComponent(traceId)}`, {
-        signal: controller.signal,
-        headers: { "Content-Type": "application/json" },
-      });
-      clearTimeout(timeoutId);
-      if (res.ok) {
-        const json = await res.json();
-        if (json && json.spans && json.spans.length > 0) {
-          return NextResponse.json(json);
-        }
-      }
-    } catch {
-      // Backend offline
+    const backendJson = await fetchBackendJson<any>(
+      `/monitoring/traces/${encodeURIComponent(traceId)}`,
+      {},
+      15000
+    );
+    if (backendJson && backendJson.spans && backendJson.spans.length > 0) {
+      return NextResponse.json(backendJson);
     }
 
     return NextResponse.json(
@@ -64,24 +55,17 @@ export async function DELETE(
     // 2. Also proxy to backend API if configured
     let backendSuccess = false;
     let backendDeletedSpans = 0;
-    const apiBase = (process.env.API_URL || process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api").replace(/\/$/, "");
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 2000);
-      const res = await fetch(`${apiBase}/monitoring/traces/${encodeURIComponent(traceId)}`, {
-        method: "DELETE",
-        signal: controller.signal,
-        headers: { "Content-Type": "application/json" },
-      });
-      clearTimeout(timeoutId);
-      if (res.ok) {
-        backendSuccess = true;
-        const json = await res.json().catch(() => null);
-        if (json && typeof json.deleted === "number") {
-          backendDeletedSpans = json.deleted;
-        }
+    const backendJson = await fetchBackendJson<any>(
+      `/monitoring/traces/${encodeURIComponent(traceId)}`,
+      { method: "DELETE" },
+      10000
+    );
+    if (backendJson) {
+      backendSuccess = true;
+      if (typeof backendJson.deleted === "number") {
+        backendDeletedSpans = backendJson.deleted;
       }
-    } catch {}
+    }
 
     if (!dbResult.success && !backendSuccess) {
       return NextResponse.json(

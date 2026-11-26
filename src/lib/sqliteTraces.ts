@@ -39,10 +39,15 @@ export function resolveTracesDbPath(): string | null {
     "/app/traces-fallback/traces.db",
     path.resolve(process.cwd(), "../Server/traces/traces.db"),
     path.resolve(process.cwd(), "../server/traces/traces.db"),
+    path.resolve(process.cwd(), "../../Server/traces/traces.db"),
+    path.resolve(process.cwd(), "../../server/traces/traces.db"),
     path.resolve(process.cwd(), "traces/traces.db"),
     path.resolve(process.cwd(), "../traces/traces.db"),
+    path.resolve(process.cwd(), "../../traces/traces.db"),
     path.resolve(__dirname, "../../../Server/traces/traces.db"),
     path.resolve(__dirname, "../../../server/traces/traces.db"),
+    path.resolve(__dirname, "../../../../../../Server/traces/traces.db"),
+    path.resolve(__dirname, "../../../../../../server/traces/traces.db"),
   ];
 
   for (const p of candidates) {

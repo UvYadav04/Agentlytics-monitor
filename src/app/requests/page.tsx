@@ -39,7 +39,7 @@ export default function RequestsPage() {
       }
       if (sinceHours !== null && overviewData?.recentTraces) {
         setAllRequests(overviewData.recentTraces);
-      } else if (tracesData && Array.isArray(tracesData)) {
+      } else if (tracesData && Array.isArray(tracesData) && tracesData.length > 0) {
         setAllRequests(tracesData);
       } else if (overviewData && overviewData.recentTraces) {
         setAllRequests(overviewData.recentTraces);

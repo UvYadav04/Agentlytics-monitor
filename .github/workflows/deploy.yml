@@ -36,14 +36,25 @@ jobs:
           password: ${{ secrets.OVH_PASSWORD || secrets.LIGHTSAIL_SSH_KEY }}
           script: |
             mkdir -p ~/agentlytics/monitoring
+            mkdir -p ~/agentlytics/traces
             cat << 'EOF' > ~/agentlytics/monitoring/docker-compose.yml
             services:
               monitoring:
                 image: itzdineshyadav/data-analyzer:monitoring
                 container_name: data-analyzer-monitoring
                 restart: unless-stopped
+                user: "0:0"
                 ports:
                   - "3001:3001"
+                extra_hosts:
+                  - "host.docker.internal:host-gateway"
+                environment:
+                  - MONITORING_TRACES_DIR=/app/traces
+                  - MONITORING_DB_PATH=/app/traces/traces.db
+                  - API_URL=http://host.docker.internal:8000/api
+                volumes:
+                  - ../traces:/app/traces
+                  - ../server/traces:/app/traces-host
             EOF
 
             echo "Stopping old monitoring container..."
