@@ -460,9 +460,9 @@ export const TraceInspectorModal: React.FC<TraceInspectorModalProps> = ({ tree, 
               <span>{hasError ? "Failed / Error" : "OK (Success)"}</span>
             </span>
 
-            {/* Trace ID */}
+            {/* Request ID */}
             <div className="flex items-center gap-1.5 font-mono text-xs text-slate-300 bg-[#070C19] border border-[#1E293B] px-3 py-1 rounded-lg">
-              <span className="text-slate-500 font-sans">Trace:</span>
+              <span className="text-slate-500 font-sans">Request:</span>
               <span className="font-semibold text-cyan-400">{tree.trace_id}</span>
               <button
                 onClick={() => {
@@ -471,7 +471,7 @@ export const TraceInspectorModal: React.FC<TraceInspectorModalProps> = ({ tree, 
                   setTimeout(() => setCopiedTrace(false), 2000);
                 }}
                 className="ml-1 text-slate-400 hover:text-white"
-                title="Copy Trace ID"
+                title="Copy Request ID"
               >
                 {copiedTrace ? (
                   <Check className="h-3 w-3 text-emerald-400" />
@@ -480,6 +480,11 @@ export const TraceInspectorModal: React.FC<TraceInspectorModalProps> = ({ tree, 
                 )}
               </button>
             </div>
+
+            {/* Trace Count */}
+            <span className="rounded-lg bg-cyan-950/50 border border-cyan-700/40 px-2.5 py-1 text-[11px] font-mono font-medium text-cyan-300">
+              {allSpans.length} {allSpans.length === 1 ? "Trace" : "Traces"}
+            </span>
 
             {/* Route */}
             {route && (
@@ -641,7 +646,9 @@ export const TraceInspectorModal: React.FC<TraceInspectorModalProps> = ({ tree, 
         {/* 3. Navigation View Switcher & Accordion Controls */}
         <div className="flex items-center justify-between border-b border-[#1E293B] bg-[#070C19] px-6 py-2.5 shrink-0">
           <div className="flex items-center gap-3">
-            <span className="text-xs font-semibold text-white">Execution Flow (Ordered by Agent):</span>
+            <span className="text-xs font-semibold text-white">
+              Request Execution Traces ({displaySpans.length}):
+            </span>
             <div className="flex items-center gap-1.5">
               <button
                 onClick={expandAll}

@@ -73,9 +73,20 @@ export interface TraceSummary {
 export function isRealUserRequest(t: { query?: string; intent?: string; total_spans?: number }): boolean {
   if (!t.query) return false;
   const q = t.query.trim().toLowerCase();
+  if (!q) return false;
   if (q.startsWith("execution of")) return false;
   if (q.startsWith("execute_") || q.startsWith("inspect_") || q.startsWith("list_")) return false;
-  if (q.includes("deepinfra") || q.includes("openai.create")) return false;
+  if (
+    q.startsWith("deepinfra.") ||
+    q.startsWith("openai.") ||
+    q.startsWith("openrouter.") ||
+    q.startsWith("cerebras.") ||
+    q.startsWith("groq.") ||
+    q.startsWith("run_python_sandbox") ||
+    q.startsWith("search_documents")
+  ) {
+    return false;
+  }
   return true;
 }
 

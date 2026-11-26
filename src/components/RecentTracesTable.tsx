@@ -197,7 +197,7 @@ export const RecentTracesTable: React.FC<RecentTracesTableProps> = ({
                 : `${userRequests.length} ${userRequests.length === 1 ? "request" : "requests"}`}
             </span>
           </div>
-          <p className="text-xs text-slate-400 mt-0.5">Click a request to inspect its multi-step execution path</p>
+          <p className="text-xs text-slate-400 mt-0.5">Click a request to inspect its execution traces and step-by-step flow</p>
         </div>
 
         <div className="flex items-center gap-2">
@@ -311,7 +311,7 @@ export const RecentTracesTable: React.FC<RecentTracesTableProps> = ({
                 />
               </th>
               <th className="pb-2.5 pt-1 font-medium pl-1">Request / Query</th>
-              <th className="pb-2.5 pt-1 font-medium">Steps</th>
+              <th className="pb-2.5 pt-1 font-medium">Traces</th>
               <th className="pb-2.5 pt-1 font-medium">Intent / Route</th>
               <th className="pb-2.5 pt-1 font-medium">Latency</th>
               <th className="pb-2.5 pt-1 font-medium">Tokens</th>
@@ -407,11 +407,11 @@ export const RecentTracesTable: React.FC<RecentTracesTableProps> = ({
                       </div>
                     </td>
 
-                    {/* 2. Steps badge */}
+                    {/* 2. Traces count badge */}
                     <td className="py-3 whitespace-nowrap">
                       <span className="inline-flex items-center gap-1.5 rounded-md bg-[#131F37] border border-[#1E293B] px-2 py-0.5 text-[11px] font-mono font-medium text-cyan-300">
                         <Layers className="h-3 w-3 text-cyan-400" />
-                        {stepCount} {stepCount === 1 ? "step" : "steps"}
+                        {stepCount} {stepCount === 1 ? "trace" : "traces"}
                       </span>
                     </td>
 

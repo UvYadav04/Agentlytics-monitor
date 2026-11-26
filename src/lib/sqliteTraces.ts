@@ -1,5 +1,6 @@
 import fs from "fs";
 import path from "path";
+import { isRealUserRequest } from "./types";
 import type {
   BreakdownStat,
   ComponentStat,
@@ -409,6 +410,306 @@ function isToolCallSpan(span: LightSpanRow): boolean {
   );
 }
 
+const USER_REQUEST_HAVING_SQL = `
+  (
+    MAX(
+      CASE
+        WHEN json_extract(t.tags_json, '$.investigation_id') IS NOT NULL
+         AND json_extract(t.tags_json, '$.investigation_id') != ''
+        THEN 1 ELSE 0
+      END
+    ) = 1
+    OR (
+      SUM(CASE WHEN t.step_type = 'agent' THEN 1 ELSE 0 END) > 0
+      AND NOT (
+        COUNT(*) = 1 AND (
+          MAX(t.step_type) IN ('llm', 'tool', 'database', 'retriever', 'reranker', 'router', 'sandbox', 'generator', 'custom')
+          OR MAX(t.step_name) LIKE 'deepinfra%'
+          OR MAX(t.step_name) LIKE 'openai%'
+          OR MAX(t.step_name) LIKE 'openrouter%'
+          OR MAX(t.step_name) LIKE 'cerebras%'
+          OR MAX(t.step_name) LIKE 'groq%'
+          OR MAX(t.step_name) LIKE 'execute_%'
+          OR MAX(t.step_name) LIKE 'inspect_%'
+          OR MAX(t.step_name) LIKE 'run_python_sandbox%'
+          OR MAX(t.step_name) LIKE 'search_documents%'
+        )
+      )
+    )
+  )
+`;
+
+const REQUEST_GROUP_EXPR = "COALESCE(NULLIF(json_extract(t.tags_json, '$.investigation_id'), ''), t.trace_id)";
+const SPAN_GROUP_EXPR = "COALESCE(NULLIF(json_extract(s.tags_json, '$.investigation_id'), ''), s.trace_id)";
+
+function buildUserRequestSelectSql(whereSql: string, extraHavingSql: string, orderAndLimitSql: string): string {
+  return `
+    SELECT
+      ${REQUEST_GROUP_EXPR} as request_id,
+      MIN(t.start_time) as start_time,
+      MAX(t.end_time) as end_time,
+      ROUND((MAX(t.end_time) - MIN(t.start_time)) * 1000, 2) as total_duration_ms,
+      COUNT(*) as total_spans,
+      SUM(CASE WHEN t.status = 'error' THEN 1 ELSE 0 END) as error_count,
+      SUM(t.prompt_tokens) as total_prompt_tokens,
+      SUM(t.completion_tokens) as total_completion_tokens,
+      SUM(t.total_tokens) as total_tokens,
+      MAX(t.created_at) as created_at,
+      MAX(CASE WHEN json_extract(t.tags_json, '$.investigation_id') IS NOT NULL AND json_extract(t.tags_json, '$.investigation_id') != '' THEN 1 ELSE 0 END) as has_investigation_id,
+      (SELECT s.step_name FROM spans s
+       WHERE ${SPAN_GROUP_EXPR} = ${REQUEST_GROUP_EXPR}
+       ORDER BY CASE WHEN s.step_type = 'agent' THEN 0 WHEN s.step_type = 'router' THEN 1 ELSE 2 END, s.start_time ASC LIMIT 1) as root_step_name,
+      (SELECT s.component FROM spans s
+       WHERE ${SPAN_GROUP_EXPR} = ${REQUEST_GROUP_EXPR}
+       ORDER BY CASE WHEN s.step_type = 'agent' THEN 0 WHEN s.step_type = 'router' THEN 1 ELSE 2 END, s.start_time ASC LIMIT 1) as root_component,
+      (SELECT s.inputs_json FROM spans s
+       WHERE ${SPAN_GROUP_EXPR} = ${REQUEST_GROUP_EXPR}
+         AND (s.inputs_json LIKE '%"objective"%' OR s.inputs_json LIKE '%"query"%' OR s.inputs_json LIKE '%"question"%' OR s.inputs_json LIKE '%"prompt"%')
+       ORDER BY CASE WHEN s.step_type IN ('agent', 'router') THEN 0 ELSE 1 END, s.start_time ASC LIMIT 1) as query_inputs,
+      (SELECT s.tags_json FROM spans s
+       WHERE ${SPAN_GROUP_EXPR} = ${REQUEST_GROUP_EXPR}
+         AND (s.tags_json LIKE '%"query"%' OR s.tags_json LIKE '%"objective"%' OR s.tags_json LIKE '%"investigation_id"%')
+       ORDER BY CASE WHEN s.tags_json LIKE '%"query"%' THEN 0 ELSE 1 END, s.start_time ASC LIMIT 1) as query_tags
+    FROM spans t
+    ${whereSql}
+    GROUP BY request_id
+    HAVING ${USER_REQUEST_HAVING_SQL}
+      ${extraHavingSql}
+    ${orderAndLimitSql}
+  `;
+}
+
+function extractUserQueryFromPayloads(queryInputs: any, queryTags: any): string {
+  let q =
+    queryTags?.query ||
+    queryTags?.objective ||
+    queryInputs?.objective ||
+    queryInputs?.query ||
+    queryInputs?.question ||
+    queryInputs?.prompt ||
+    "";
+
+  if (!q && queryInputs?.messages && Array.isArray(queryInputs.messages)) {
+    const userMsg = queryInputs.messages.find(
+      (m: any) =>
+        typeof m === "object" &&
+        m !== null &&
+        (m.role === "user" || m.role === "HumanMessage" || m.type === "HumanMessage")
+    );
+    if (userMsg?.content) {
+      q = String(userMsg.content);
+    }
+  }
+
+  return typeof q === "string" ? q.trim() : String(q || "").trim();
+}
+
+function classifyIntentAndRoute(stepName: string, component: string, requestId: string): { intent: string; route: string } {
+  const fullText = `${stepName} ${component} ${requestId}`.toLowerCase();
+  if (fullText.includes("tabular") || fullText.includes("duckdb")) {
+    return { intent: "Tabular Analysis", route: "agent.tabular" };
+  }
+  if (fullText.includes("database") || fullText.includes("sql")) {
+    return { intent: "SQL Query Execution", route: "agent.database" };
+  }
+  if (fullText.includes("document") || fullText.includes("rag")) {
+    return { intent: "Document RAG", route: "agent.document" };
+  }
+  if (fullText.includes("light") || fullText.includes("greeting")) {
+    return { intent: "Direct Assistant", route: "light.reply" };
+  }
+  return { intent: "Data Investigation", route: "orchestrator" };
+}
+
+function mapRequestRowToSummary(d: any): TraceSummary | null {
+  const stepName = d.root_step_name || "";
+  const component = d.root_component || "";
+  const queryInputs = parseJsonSafe(d.query_inputs, {});
+  const queryTags = parseJsonSafe(d.query_tags, {});
+  const requestId = d.request_id || d.trace_id;
+
+  let q = extractUserQueryFromPayloads(queryInputs, queryTags);
+  if (!q && Number(d.has_investigation_id) === 1) {
+    q = `Investigation ${requestId}`;
+  }
+  if (!q) {
+    return null;
+  }
+
+  const candidate: TraceSummary = {
+    trace_id: requestId,
+    user_id: queryTags?.user_email || queryTags?.user_id || "usr_prod",
+    intent: "",
+    route: "",
+    status: "OK",
+    error_count: Number(d.error_count || 0),
+    total_duration_ms: Number(d.total_duration_ms || 0),
+    latency_s: Number((Number(d.total_duration_ms || 0) / 1000).toFixed(2)),
+    total_spans: Number(d.total_spans || 1),
+    total_prompt_tokens: Number(d.total_prompt_tokens || 0),
+    total_completion_tokens: Number(d.total_completion_tokens || 0),
+    total_tokens:
+      Number(d.total_tokens) || Number(d.total_prompt_tokens || 0) + Number(d.total_completion_tokens || 0),
+    start_time: Number(d.start_time || 0),
+    end_time: Number(d.end_time || 0),
+    created_at: d.created_at || new Date().toISOString(),
+    query: q,
+  };
+
+  if (!isRealUserRequest(candidate)) {
+    return null;
+  }
+
+  const { intent, route } = classifyIntentAndRoute(stepName, component, requestId);
+  const durMs = candidate.total_duration_ms;
+  const isErr = candidate.error_count > 0;
+  const isTimeout = durMs > 30000;
+
+  candidate.intent = intent;
+  candidate.route = queryTags?.route || route;
+  candidate.status = isErr ? "Error" : isTimeout ? "Timeout" : "OK";
+  return candidate;
+}
+
+function resolveInvestigationsDir(dbPath: string | null): string | null {
+  const candidates: string[] = [];
+  if (dbPath) {
+    candidates.push(path.join(path.dirname(dbPath), "investigations"));
+  }
+  const envDir = process.env.MONITORING_TRACES_DIR;
+  if (envDir) {
+    candidates.push(path.join(envDir, "investigations"));
+  }
+  candidates.push("/app/traces/investigations", "/app/traces-host/investigations");
+
+  for (const dir of candidates) {
+    try {
+      if (fs.existsSync(dir) && fs.statSync(dir).isDirectory()) {
+        return dir;
+      }
+    } catch {}
+  }
+  return null;
+}
+
+function loadInvestigationTreeFromFile(traceId: string, dbPath: string | null): TraceTree | null {
+  if (!traceId || path.basename(traceId) !== traceId || traceId.includes("..")) {
+    return null;
+  }
+  const invDir = resolveInvestigationsDir(dbPath);
+  if (!invDir) return null;
+
+  const filePath = path.join(invDir, `${traceId}.json`);
+  try {
+    if (!fs.existsSync(filePath)) return null;
+    const raw = fs.readFileSync(filePath, "utf-8");
+    const parsed = JSON.parse(raw);
+    if (parsed && Array.isArray(parsed.spans) && parsed.spans.length > 0) {
+      return {
+        trace_id: parsed.trace_id || traceId,
+        total_spans: parsed.total_spans || parsed.spans.length,
+        roots: Array.isArray(parsed.roots) ? parsed.roots : parsed.spans,
+        spans: parsed.spans,
+      };
+    }
+  } catch {}
+  return null;
+}
+
+function loadInvestigationSummariesFromFiles(
+  dbPath: string | null,
+  existingIds: Set<string>,
+  options: { limit?: number; cutoffSec?: number | null; minDurationMs?: number | null; maxDurationMs?: number | null } = {}
+): TraceSummary[] {
+  const invDir = resolveInvestigationsDir(dbPath);
+  if (!invDir) return [];
+
+  try {
+    const entries = fs
+      .readdirSync(invDir)
+      .filter((name) => name.endsWith(".json"))
+      .map((name) => {
+        const full = path.join(invDir, name);
+        let mtimeMs = 0;
+        try {
+          mtimeMs = fs.statSync(full).mtimeMs;
+        } catch {}
+        return { name, id: name.slice(0, -5), full, mtimeMs };
+      })
+      .filter((item) => !existingIds.has(item.id))
+      .sort((a, b) => b.mtimeMs - a.mtimeMs);
+
+    const maxRead = options.limit ?? 100;
+    const summaries: TraceSummary[] = [];
+
+    for (const item of entries) {
+      if (summaries.length >= maxRead) break;
+      try {
+        const parsed = JSON.parse(fs.readFileSync(item.full, "utf-8"));
+        const spans: SpanRecord[] = Array.isArray(parsed?.spans) ? parsed.spans : [];
+        if (spans.length === 0) continue;
+
+        const startTime = Math.min(...spans.map((s) => Number(s.start_time || 0)));
+        const endTime = Math.max(...spans.map((s) => Number(s.end_time || 0)));
+        const durMs = Math.max(0, Number(((endTime - startTime) * 1000).toFixed(2)));
+
+        if (options.cutoffSec !== undefined && options.cutoffSec !== null && startTime < options.cutoffSec) continue;
+        if (options.minDurationMs !== undefined && options.minDurationMs !== null && durMs < options.minDurationMs) continue;
+        if (options.maxDurationMs !== undefined && options.maxDurationMs !== null && durMs > options.maxDurationMs) continue;
+
+        const agentSpan = spans.find((s) => s.step_type === "agent" || s.step_type === "router") || spans[0];
+        let q = "";
+        let tags: Record<string, any> = {};
+        for (const s of spans) {
+          if (s.tags && (s.tags.query || s.tags.objective || s.tags.user_id || s.tags.user_email)) {
+            tags = { ...tags, ...s.tags };
+          }
+          if (!q) {
+            q = extractUserQueryFromPayloads(s.inputs, s.tags);
+          }
+        }
+        if (!q) q = `Investigation ${item.id}`;
+
+        const errorCount = spans.filter((s) => s.status === "error").length;
+        const promptTokens = spans.reduce((acc, s) => acc + Number(s.prompt_tokens || 0), 0);
+        const completionTokens = spans.reduce((acc, s) => acc + Number(s.completion_tokens || 0), 0);
+        const totalTokens = spans.reduce(
+          (acc, s) => acc + Number(s.total_tokens || Number(s.prompt_tokens || 0) + Number(s.completion_tokens || 0)),
+          0
+        );
+        const { intent, route } = classifyIntentAndRoute(
+          agentSpan?.step_name || "",
+          agentSpan?.component || "",
+          item.id
+        );
+
+        summaries.push({
+          trace_id: parsed.trace_id || item.id,
+          user_id: tags.user_email || tags.user_id || "usr_prod",
+          intent,
+          route: tags.route || route,
+          status: errorCount > 0 ? "Error" : durMs > 30000 ? "Timeout" : "OK",
+          error_count: errorCount,
+          total_duration_ms: durMs,
+          latency_s: Number((durMs / 1000).toFixed(2)),
+          total_spans: spans.length,
+          total_prompt_tokens: promptTokens,
+          total_completion_tokens: completionTokens,
+          total_tokens: totalTokens,
+          start_time: startTime,
+          end_time: endTime,
+          created_at: spans[spans.length - 1]?.created_at || new Date(item.mtimeMs || Date.now()).toISOString(),
+          query: q,
+        });
+      } catch {}
+    }
+
+    return summaries;
+  } catch {
+    return [];
+  }
+}
+
 export function queryDashboardOverviewFromDb(filters: TelemetryFilters = {}): DashboardTelemetry | null {
   const dbPath = resolveTracesDbPath();
   if (!dbPath) return null;
@@ -454,26 +755,17 @@ export function queryDashboardOverviewFromDb(filters: TelemetryFilters = {}): Da
     const havingDurationSql =
       havingDurationClauses.length > 0 ? `AND ${havingDurationClauses.join(" AND ")}` : "";
 
-    // 1. Trace durations, error counts, days grouped by user request
+    // 1. Trace durations, error counts, days grouped strictly by user request
     const traceQuery = `
       SELECT
-        COALESCE(json_extract(t.tags_json, '$.investigation_id'), t.trace_id) as request_id,
+        ${REQUEST_GROUP_EXPR} as request_id,
         ROUND((MAX(t.end_time) - MIN(t.start_time)), 3) as duration_s,
         SUM(CASE WHEN t.status = 'error' THEN 1 ELSE 0 END) as error_count,
         substr(MIN(t.created_at), 1, 10) as day
       FROM spans t
       ${whereSql}
       GROUP BY request_id
-      HAVING 
-        NOT (
-          COUNT(*) = 1 AND (
-            (SELECT s.step_type FROM spans s WHERE s.trace_id = t.trace_id LIMIT 1) IN ('llm', 'tool', 'database', 'retriever', 'reranker', 'router')
-            OR (SELECT s.step_name FROM spans s WHERE s.trace_id = t.trace_id LIMIT 1) LIKE 'deepinfra%'
-            OR (SELECT s.step_name FROM spans s WHERE s.trace_id = t.trace_id LIMIT 1) LIKE 'openai%'
-            OR (SELECT s.step_name FROM spans s WHERE s.trace_id = t.trace_id LIMIT 1) LIKE 'execute_%'
-            OR (SELECT s.step_name FROM spans s WHERE s.trace_id = t.trace_id LIMIT 1) LIKE 'inspect_%'
-          )
-        )
+      HAVING ${USER_REQUEST_HAVING_SQL}
         ${havingDurationSql}
     `;
     const traceRows = db.prepare(traceQuery).all(...whereParams, ...havingDurationParams) as any[];
@@ -752,130 +1044,28 @@ export function queryDashboardOverviewFromDb(filters: TelemetryFilters = {}): Da
     const slowestSpans = slowestRows.map(rowToSpan);
 
     // 6. Recent requests (strictly USER REQUESTS only, excluding raw internal steps)
-    const recentQuery = `
-      SELECT
-        COALESCE(json_extract(t.tags_json, '$.investigation_id'), t.trace_id) as request_id,
-        MIN(t.start_time) as start_time,
-        MAX(t.end_time) as end_time,
-        ROUND((MAX(t.end_time) - MIN(t.start_time)) * 1000, 2) as total_duration_ms,
-        COUNT(*) as total_spans,
-        SUM(CASE WHEN t.status = 'error' THEN 1 ELSE 0 END) as error_count,
-        SUM(t.prompt_tokens) as total_prompt_tokens,
-        SUM(t.completion_tokens) as total_completion_tokens,
-        SUM(t.total_tokens) as total_tokens,
-        MAX(t.created_at) as created_at,
-        (SELECT s.step_name FROM spans s WHERE (s.trace_id = t.trace_id OR json_extract(s.tags_json, '$.investigation_id') = COALESCE(json_extract(t.tags_json, '$.investigation_id'), t.trace_id)) AND (s.parent_span_id IS NULL OR s.parent_span_id = '') LIMIT 1) as root_step_name,
-        (SELECT s.component FROM spans s WHERE (s.trace_id = t.trace_id OR json_extract(s.tags_json, '$.investigation_id') = COALESCE(json_extract(t.tags_json, '$.investigation_id'), t.trace_id)) AND (s.parent_span_id IS NULL OR s.parent_span_id = '') LIMIT 1) as root_component,
-        (SELECT s.inputs_json FROM spans s WHERE (s.trace_id = t.trace_id OR json_extract(s.tags_json, '$.investigation_id') = COALESCE(json_extract(t.tags_json, '$.investigation_id'), t.trace_id)) AND (s.inputs_json LIKE '%"objective"%' OR s.inputs_json LIKE '%"query"%' OR s.inputs_json LIKE '%"prompt"%') ORDER BY s.start_time ASC LIMIT 1) as query_inputs,
-        (SELECT s.tags_json FROM spans s WHERE (s.trace_id = t.trace_id OR json_extract(s.tags_json, '$.investigation_id') = COALESCE(json_extract(t.tags_json, '$.investigation_id'), t.trace_id)) AND (s.tags_json LIKE '%"query"%' OR s.tags_json LIKE '%"objective"%') ORDER BY s.start_time ASC LIMIT 1) as query_tags
-      FROM spans t
-      ${whereSql}
-      GROUP BY request_id
-      HAVING 
-        NOT (
-          COUNT(*) = 1 AND (
-            (SELECT s.step_type FROM spans s WHERE s.trace_id = t.trace_id LIMIT 1) IN ('llm', 'tool', 'database', 'retriever', 'reranker', 'router')
-            OR (SELECT s.step_name FROM spans s WHERE s.trace_id = t.trace_id LIMIT 1) LIKE 'deepinfra%'
-            OR (SELECT s.step_name FROM spans s WHERE s.trace_id = t.trace_id LIMIT 1) LIKE 'openai%'
-            OR (SELECT s.step_name FROM spans s WHERE s.trace_id = t.trace_id LIMIT 1) LIKE 'execute_%'
-            OR (SELECT s.step_name FROM spans s WHERE s.trace_id = t.trace_id LIMIT 1) LIKE 'inspect_%'
-          )
-        )
-        ${havingDurationSql}
-      ORDER BY start_time DESC
-      LIMIT 100
-    `;
+    const recentQuery = buildUserRequestSelectSql(whereSql, havingDurationSql, "ORDER BY start_time DESC LIMIT 100");
     const recentRows = db.prepare(recentQuery).all(...whereParams, ...havingDurationParams) as any[];
-    const recentTraces: TraceSummary[] = recentRows
-      .map((d) => {
-        const stepName = d.root_step_name || "";
-        const component = d.root_component || "";
-        const queryInputs = parseJsonSafe(d.query_inputs, {});
-        const queryTags = parseJsonSafe(d.query_tags, {});
-
-        let q =
-          queryInputs?.objective ||
-          queryInputs?.query ||
-          queryInputs?.question ||
-          queryInputs?.prompt ||
-          queryTags?.query ||
-          queryTags?.objective ||
-          "";
-
-        if (!q && queryInputs?.messages && Array.isArray(queryInputs.messages)) {
-          const lastMsg = queryInputs.messages[queryInputs.messages.length - 1];
-          q = typeof lastMsg === "object" ? lastMsg.content || "" : String(lastMsg);
-        }
-
-        // Strictly require a real user query: if empty or starts with "Execution of", it's an internal step
-        if (!q) {
-          return null;
-        }
-
-        const qLower = q.toLowerCase().trim();
-        if (
-          qLower.startsWith("execution of") ||
-          qLower.startsWith("execute_") ||
-          qLower.startsWith("inspect_") ||
-          qLower.startsWith("list_") ||
-          qLower.startsWith("deepinfra") ||
-          qLower.startsWith("openai")
-        ) {
-          return null;
-        }
-
-        let intent = "Data Investigation";
-        let route = "orchestrator";
-        const fullText = (stepName + " " + component + " " + (d.request_id || "")).toLowerCase();
-        if (fullText.includes("tabular") || fullText.includes("duckdb")) {
-          intent = "Tabular Analysis";
-          route = "agent.tabular";
-        } else if (fullText.includes("database") || fullText.includes("sql")) {
-          intent = "SQL Query Execution";
-          route = "agent.database";
-        } else if (fullText.includes("document") || fullText.includes("rag")) {
-          intent = "Document RAG";
-          route = "agent.document";
-        } else if (fullText.includes("light")) {
-          intent = "Direct Assistant";
-          route = "light.reply";
-        }
-
-        const totalTokensTrace =
-          Number(d.total_tokens) || Number(d.total_prompt_tokens || 0) + Number(d.total_completion_tokens || 0);
-
-        const durMs = Number(d.total_duration_ms || 0);
-        const isErr = Number(d.error_count || 0) > 0;
-        const isTimeout = durMs > 30000;
-        const status = isErr ? "Error" : isTimeout ? "Timeout" : "OK";
-
-        return {
-          trace_id: d.request_id || d.trace_id,
-          user_id: queryTags?.user_id || "usr_prod",
-          workspace_id: queryTags?.workspace_id || "ws_prod",
-          intent,
-          route,
-          status,
-          error_count: Number(d.error_count || 0),
-          total_duration_ms: durMs,
-          latency_s: Number((durMs / 1000).toFixed(2)),
-          total_spans: Number(d.total_spans || 1),
-          total_prompt_tokens: Number(d.total_prompt_tokens || 0),
-          total_completion_tokens: Number(d.total_completion_tokens || 0),
-          total_tokens: totalTokensTrace,
-          start_time: Number(d.start_time || 0),
-          end_time: Number(d.end_time || 0),
-          created_at: d.created_at || new Date().toISOString(),
-          query: q,
-        } as TraceSummary;
-      })
+    const dbRecentTraces: TraceSummary[] = recentRows
+      .map(mapRequestRowToSummary)
       .filter((t): t is TraceSummary => t !== null);
 
     db.close();
 
+    const seenIds = new Set(dbRecentTraces.map((t) => t.trace_id));
+    const jsonFallbackTraces = loadInvestigationSummariesFromFiles(dbPath, seenIds, {
+      limit: 100,
+      cutoffSec,
+      minDurationMs,
+      maxDurationMs,
+    });
+    const recentTraces = [...dbRecentTraces, ...jsonFallbackTraces]
+      .sort((a, b) => b.start_time - a.start_time)
+      .slice(0, 100);
+
     return {
       metrics: {
-        totalTraces,
+        totalTraces: Math.max(totalTraces, recentTraces.length),
         totalSpans,
         p50LatencySec: p50,
         p95LatencySec: p95,
@@ -905,10 +1095,10 @@ export function queryDashboardOverviewFromDb(filters: TelemetryFilters = {}): Da
 
 export function queryTraceTreeFromDb(traceId: string): TraceTree | null {
   const dbPath = resolveTracesDbPath();
-  if (!dbPath) return null;
+  if (!dbPath) return loadInvestigationTreeFromFile(traceId, null);
 
   const DatabaseSync = getDatabaseSync();
-  if (!DatabaseSync) return null;
+  if (!DatabaseSync) return loadInvestigationTreeFromFile(traceId, dbPath);
 
   try {
     const db = new DatabaseSync(dbPath, { readOnly: true });
@@ -922,7 +1112,9 @@ export function queryTraceTreeFromDb(traceId: string): TraceTree | null {
       .all(traceId, traceId) as any[];
     db.close();
 
-    if (!rows || rows.length === 0) return null;
+    if (!rows || rows.length === 0) {
+      return loadInvestigationTreeFromFile(traceId, dbPath);
+    }
 
     const spans = rows.map(rowToSpan);
     const byId: Record<string, any> = {};
@@ -948,7 +1140,7 @@ export function queryTraceTreeFromDb(traceId: string): TraceTree | null {
     };
   } catch (err) {
     console.error(`Failed to query trace tree for ${traceId}:`, err);
-    return null;
+    return loadInvestigationTreeFromFile(traceId, dbPath);
   }
 }
 
@@ -970,121 +1162,28 @@ export function queryTracesListFromDb(limit = 50, offset = 0, status?: string): 
       }
     }
 
-    const query = `
-      SELECT
-        COALESCE(json_extract(t.tags_json, '$.investigation_id'), t.trace_id) as request_id,
-        MIN(t.start_time) as start_time,
-        MAX(t.end_time) as end_time,
-        ROUND((MAX(t.end_time) - MIN(t.start_time)) * 1000, 2) as total_duration_ms,
-        COUNT(*) as total_spans,
-        SUM(CASE WHEN t.status = 'error' THEN 1 ELSE 0 END) as error_count,
-        SUM(t.prompt_tokens) as total_prompt_tokens,
-        SUM(t.completion_tokens) as total_completion_tokens,
-        SUM(t.total_tokens) as total_tokens,
-        MAX(t.created_at) as created_at,
-        (SELECT s.step_name FROM spans s WHERE (s.trace_id = t.trace_id OR json_extract(s.tags_json, '$.investigation_id') = COALESCE(json_extract(t.tags_json, '$.investigation_id'), t.trace_id)) AND (s.parent_span_id IS NULL OR s.parent_span_id = '') LIMIT 1) as root_step_name,
-        (SELECT s.component FROM spans s WHERE (s.trace_id = t.trace_id OR json_extract(s.tags_json, '$.investigation_id') = COALESCE(json_extract(t.tags_json, '$.investigation_id'), t.trace_id)) AND (s.parent_span_id IS NULL OR s.parent_span_id = '') LIMIT 1) as root_component,
-        (SELECT s.inputs_json FROM spans s WHERE (s.trace_id = t.trace_id OR json_extract(s.tags_json, '$.investigation_id') = COALESCE(json_extract(t.tags_json, '$.investigation_id'), t.trace_id)) AND (s.inputs_json LIKE '%"objective"%' OR s.inputs_json LIKE '%"query"%' OR s.inputs_json LIKE '%"prompt"%') ORDER BY s.start_time ASC LIMIT 1) as query_inputs,
-        (SELECT s.tags_json FROM spans s WHERE (s.trace_id = t.trace_id OR json_extract(s.tags_json, '$.investigation_id') = COALESCE(json_extract(t.tags_json, '$.investigation_id'), t.trace_id)) AND (s.tags_json LIKE '%"query"%' OR s.tags_json LIKE '%"objective"%') ORDER BY s.start_time ASC LIMIT 1) as query_tags
-      FROM spans t
-      GROUP BY request_id
-      HAVING 
-        NOT (
-          COUNT(*) = 1 AND (
-            (SELECT s.step_type FROM spans s WHERE s.trace_id = t.trace_id LIMIT 1) IN ('llm', 'tool', 'database', 'retriever', 'reranker', 'router')
-            OR (SELECT s.step_name FROM spans s WHERE s.trace_id = t.trace_id LIMIT 1) LIKE 'deepinfra%'
-            OR (SELECT s.step_name FROM spans s WHERE s.trace_id = t.trace_id LIMIT 1) LIKE 'openai%'
-            OR (SELECT s.step_name FROM spans s WHERE s.trace_id = t.trace_id LIMIT 1) LIKE 'execute_%'
-            OR (SELECT s.step_name FROM spans s WHERE s.trace_id = t.trace_id LIMIT 1) LIKE 'inspect_%'
-          )
-        )
-        ${havingStatus}
-      ORDER BY start_time DESC
-      LIMIT ? OFFSET ?
-    `;
-
+    const query = buildUserRequestSelectSql("", havingStatus, "ORDER BY start_time DESC LIMIT ? OFFSET ?");
     const rows = db.prepare(query).all(limit, offset) as any[];
     db.close();
 
-    return rows
-      .map((d) => {
-        const stepName = d.root_step_name || "";
-        const component = d.root_component || "";
-        const queryInputs = parseJsonSafe(d.query_inputs, {});
-        const queryTags = parseJsonSafe(d.query_tags, {});
-
-        let q =
-          queryInputs?.objective ||
-          queryInputs?.query ||
-          queryInputs?.question ||
-          queryInputs?.prompt ||
-          queryTags?.query ||
-          queryTags?.objective ||
-          "";
-
-        if (!q && queryInputs?.messages && Array.isArray(queryInputs.messages)) {
-          const lastMsg = queryInputs.messages[queryInputs.messages.length - 1];
-          q = typeof lastMsg === "object" ? lastMsg.content || "" : String(lastMsg);
-        }
-        if (!q) {
-          q = "Execution of " + (stepName || component || "Data Query");
-        }
-
-        if (
-          q.startsWith("Execution of deepinfra") ||
-          q.startsWith("Execution of openai") ||
-          q.startsWith("Execution of execute_") ||
-          q.startsWith("Execution of inspect_")
-        ) {
-          return null;
-        }
-
-        let intent = "Data Investigation";
-        let route = "orchestrator";
-        const fullText = (stepName + " " + component + " " + (d.request_id || "")).toLowerCase();
-        if (fullText.includes("tabular") || fullText.includes("duckdb")) {
-          intent = "Tabular Analysis";
-          route = "agent.tabular";
-        } else if (fullText.includes("database") || fullText.includes("sql")) {
-          intent = "SQL Query Execution";
-          route = "agent.database";
-        } else if (fullText.includes("document") || fullText.includes("rag")) {
-          intent = "Document RAG";
-          route = "agent.document";
-        } else if (fullText.includes("light")) {
-          intent = "Direct Assistant";
-          route = "light.reply";
-        }
-
-        const totalTokensTrace =
-          Number(d.total_tokens) || Number(d.total_prompt_tokens || 0) + Number(d.total_completion_tokens || 0);
-
-        const durMs = Number(d.total_duration_ms || 0);
-        const isErr = Number(d.error_count || 0) > 0;
-        const isTimeout = durMs > 30000;
-        const status = isErr ? "Error" : isTimeout ? "Timeout" : "OK";
-
-        return {
-          trace_id: d.request_id || d.trace_id,
-          user_id: queryTags?.user_id || "usr_prod",
-          workspace_id: queryTags?.workspace_id || "ws_prod",
-          intent,
-          route,
-          status,
-          error_count: Number(d.error_count || 0),
-          total_duration_ms: durMs,
-          latency_s: Number((durMs / 1000).toFixed(2)),
-          total_spans: Number(d.total_spans || 1),
-          total_prompt_tokens: Number(d.total_prompt_tokens || 0),
-          total_completion_tokens: Number(d.total_completion_tokens || 0),
-          total_tokens: totalTokensTrace,
-          start_time: Number(d.start_time || 0),
-          end_time: Number(d.end_time || 0),
-          created_at: d.created_at || new Date().toISOString(),
-          query: q,
-        } as TraceSummary;
-      })
+    const dbRequests = rows
+      .map(mapRequestRowToSummary)
       .filter((t): t is TraceSummary => t !== null);
+
+    if (offset === 0) {
+      const seenIds = new Set(dbRequests.map((t) => t.trace_id));
+      const jsonFallback = loadInvestigationSummariesFromFiles(dbPath, seenIds, { limit });
+      const filteredJson = status
+        ? jsonFallback.filter((t) =>
+            status.toLowerCase() === "ok" || status.toLowerCase() === "success"
+              ? t.error_count === 0
+              : t.error_count > 0
+          )
+        : jsonFallback;
+      return [...dbRequests, ...filteredJson].sort((a, b) => b.start_time - a.start_time).slice(0, limit);
+    }
+
+    return dbRequests;
   } catch (err) {
     console.error("Failed to query traces list from DB:", err);
     return null;
