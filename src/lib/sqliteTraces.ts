@@ -16,51 +16,83 @@ import type {
 /**
  * Resolves the location of traces.db in order of priority:
  * 1. MONITORING_DB_PATH environment variable
- * 2. Container volume bound at /app/traces/traces.db
- * 3. Container fallback volume at /app/traces-host/traces.db
- * 4. Local repo traces at Server/traces/traces.db (relative to process.cwd)
- * 5. Local directory traces/traces.db
+ * 2. MONITORING_TRACES_DIR/traces.db environment variable
+ * 3. Container volume bound at /app/traces/traces.db
+ * 4. Container fallback volume at /app/traces-host/traces.db
+ * 5. Local repo traces at server/traces/traces.db (relative to process.cwd)
+ * 6. Local directory traces/traces.db
+ *
+ * When multiple candidate files exist, prefers the first non-empty database
+ * that actually contains rows in `spans` so an empty placeholder file never
+ * shadows the active traces database.
  */
-export function resolveTracesDbPath(): string | null {
-  const envPath = process.env.MONITORING_DB_PATH;
-  if (envPath && fs.existsSync(envPath)) {
-    return envPath;
+function hasSpansRows(dbPath: string): boolean {
+  const DatabaseSync = getDatabaseSync();
+  if (!DatabaseSync) return false;
+  let db: any = null;
+  try {
+    db = new DatabaseSync(dbPath, { readOnly: true });
+    const row = db.prepare("SELECT 1 as ok FROM spans LIMIT 1").get() as { ok?: number } | undefined;
+    return Boolean(row?.ok);
+  } catch {
+    return false;
+  } finally {
+    try {
+      db?.close();
+    } catch {}
   }
+}
+
+export function resolveTracesDbPath(): string | null {
+  const rawCandidates: string[] = [];
+  const envPath = process.env.MONITORING_DB_PATH;
+  if (envPath) rawCandidates.push(envPath);
 
   const envDir = process.env.MONITORING_TRACES_DIR;
-  if (envDir) {
-    const candidate = path.join(envDir, "traces.db");
-    if (fs.existsSync(candidate)) return candidate;
-  }
+  if (envDir) rawCandidates.push(path.join(envDir, "traces.db"));
 
-  const candidates = [
+  rawCandidates.push(
     "/app/traces/traces.db",
     "/app/traces-host/traces.db",
     "/app/traces-fallback/traces.db",
-    path.resolve(process.cwd(), "../Server/traces/traces.db"),
     path.resolve(process.cwd(), "../server/traces/traces.db"),
-    path.resolve(process.cwd(), "../../Server/traces/traces.db"),
+    path.resolve(process.cwd(), "../Server/traces/traces.db"),
     path.resolve(process.cwd(), "../../server/traces/traces.db"),
+    path.resolve(process.cwd(), "../../Server/traces/traces.db"),
     path.resolve(process.cwd(), "traces/traces.db"),
     path.resolve(process.cwd(), "../traces/traces.db"),
     path.resolve(process.cwd(), "../../traces/traces.db"),
-    path.resolve(__dirname, "../../../Server/traces/traces.db"),
     path.resolve(__dirname, "../../../server/traces/traces.db"),
-    path.resolve(__dirname, "../../../../../../Server/traces/traces.db"),
+    path.resolve(__dirname, "../../../Server/traces/traces.db"),
     path.resolve(__dirname, "../../../../../../server/traces/traces.db"),
-  ];
+    path.resolve(__dirname, "../../../../../../Server/traces/traces.db")
+  );
 
-  for (const p of candidates) {
+  const seen = new Set<string>();
+  const existing: string[] = [];
+  for (const p of rawCandidates) {
+    const resolved = path.resolve(p);
+    if (seen.has(resolved)) continue;
+    seen.add(resolved);
     try {
-      if (fs.existsSync(p)) {
-        return p;
+      if (fs.existsSync(resolved) && fs.statSync(resolved).size > 0) {
+        existing.push(resolved);
       }
     } catch {
       // ignore path access errors
     }
   }
 
-  return null;
+  if (existing.length === 0) return null;
+  if (existing.length === 1) return existing[0];
+
+  for (const candidate of existing) {
+    if (hasSpansRows(candidate)) {
+      return candidate;
+    }
+  }
+
+  return existing[0];
 }
 
 // Cached DatabaseSync constructor from node:sqlite

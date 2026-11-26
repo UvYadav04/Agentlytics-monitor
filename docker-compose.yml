@@ -19,7 +19,7 @@ services:
       - MONITORING_DB_PATH=/app/traces/traces.db
       - API_URL=${API_URL:-http://host.docker.internal:8000/api}
     volumes:
-      - ../Server/traces:/app/traces
-      - ../Server/traces:/app/traces-host
+      - ../server/traces:/app/traces
+      - ../server/traces:/app/traces-host
       - ./traces:/app/traces-fallback
 

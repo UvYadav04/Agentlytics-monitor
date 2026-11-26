@@ -36,7 +36,8 @@ jobs:
           password: ${{ secrets.OVH_PASSWORD || secrets.LIGHTSAIL_SSH_KEY }}
           script: |
             mkdir -p ~/agentlytics/monitoring
-            mkdir -p ~/agentlytics/traces
+            mkdir -p ~/agentlytics/server/traces
+            chmod -R 777 ~/agentlytics/server/traces 2>/dev/null || true
             cat << 'EOF' > ~/agentlytics/monitoring/docker-compose.yml
             services:
               monitoring:
@@ -53,7 +54,7 @@ jobs:
                   - MONITORING_DB_PATH=/app/traces/traces.db
                   - API_URL=http://host.docker.internal:8000/api
                 volumes:
-                  - ../traces:/app/traces
+                  - ../server/traces:/app/traces
                   - ../server/traces:/app/traces-host
             EOF
 
